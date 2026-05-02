@@ -12,7 +12,7 @@
         <button id="btnOutput" class="btn-start" onclick="toggleBot()">▶</button>
         <button onclick="importCode()">インポート</button>
         <button onclick="exportCode()">エクスポート</button>
-        <!-- 追加: Discord Developer Portalへのリンクボタン -->
+        <!-- 復旧: Discord Developer Portalへのリンクボタン -->
         <button class="btn-link" onclick="window.open('https://discord.com/developers/applications', '_blank')">Botリンク</button>
     </header>
 
@@ -24,14 +24,18 @@
 // Bot自身のメッセージには反応しない
 if (msg.author.bot) return;
 
-// 「!ping」と送信されたら「Pong!」と返す例
-if (msg.content === '!ping') {
-    send(msg.channel_id, 'Pong!');
+// 「おみくじ」と送信されたときの処理
+if (msg.content === 'おみくじ') {
+    const fortunes = ["ぷー吉", "大吉", "中吉", "小吉", "凶", "大凶"];
+    const randomIndex = Math.floor(Math.random() * fortunes.length);
+    const result = fortunes[randomIndex];
+    
+    send(msg.channel_id, `${msg.author.username} さんの運勢は……「${result}」です！`);
 }
 
-// 簡単な返信の例
-if (msg.content.includes('なでなで')) {
-    send(msg.channel_id, 'えへへ、ありがとう！(HTMLツール稼働中✨)');
+// テスト用のPing-Pong
+if (msg.content === '!ping') {
+    send(msg.channel_id, 'Pong!');
 }
 </textarea>
     </main>
@@ -73,9 +77,7 @@ if (msg.content.includes('なでなで')) {
                 .catch(err => console.error('Ping送信エラー:', err));
         }, 14 * 60 * 1000);
 
-        function importCode() {
-            fileInput.click();
-        }
+        function importCode() { fileInput.click(); }
 
         function handleFileImport(event) {
             const file = event.target.files[0];
@@ -104,22 +106,13 @@ if (msg.content.includes('なでなで')) {
         }
 
         function toggleBot() {
-            if (isRunning) {
-                stopBot();
-            } else {
-                startBot();
-            }
+            if (isRunning) stopBot();
+            else startBot();
         }
 
         function stopBot() {
-            if (ws) {
-                ws.close();
-                ws = null;
-            }
-            if (heartbeatInterval) {
-                clearInterval(heartbeatInterval);
-                heartbeatInterval = null;
-            }
+            if (ws) { ws.close(); ws = null; }
+            if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
             isRunning = false;
             btnOutput.textContent = '▶';
             btnOutput.className = 'btn-start';
@@ -142,19 +135,19 @@ if (msg.content.includes('なでなで')) {
 
             ws = new WebSocket('wss://gateway.discord.gg/?v=10&encoding=json');
 
-            // CORSプロキシを経由してメッセージを送信する関数
+            // 安定版：自分自身のRenderサーバーを経由して送信 (Failed to fetch対策)
             const sendMessage = async (channelId, content) => {
                 try {
-                    const targetUrl = `https://discord.com/api/v10/channels/${channelId}/messages`;
-                    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`;
-
-                    const response = await fetch(proxyUrl, {
+                    const response = await fetch('/api/send-message', {
                         method: 'POST',
                         headers: {
-                            'Authorization': `Bot ${token}`,
                             'Content-Type': 'application/json'
                         },
-                        body: JSON.stringify({ content: content })
+                        body: JSON.stringify({ 
+                            channelId: channelId, 
+                            content: content,
+                            token: token
+                        })
                     });
                     
                     if (!response.ok) {
@@ -196,7 +189,7 @@ if (msg.content.includes('なでなで')) {
                         op: 2,
                         d: {
                             token: token,
-                            intents: 33281, // MESSAGE_CONTENT等を含む
+                            intents: 33281,
                             properties: {
                                 os: 'linux',
                                 browser: 'html_bot_maker',
