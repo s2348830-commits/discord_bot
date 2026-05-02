@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>スマホ向け Discord Bot Maker</title>
+    <title>スマホ向け Discord Bot Maker (リモコン版)</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,7 +12,6 @@
         <button id="btnOutput" class="btn-start" onclick="toggleBot()">▶</button>
         <button onclick="importCode()">インポート</button>
         <button onclick="exportCode()">エクスポート</button>
-        <!-- Discord Developer Portalへのリンクボタン -->
         <button class="btn-link" onclick="window.open('https://discord.com/developers/applications', '_blank')">Botリンク</button>
     </header>
 
@@ -26,7 +25,7 @@ if (msg.author.bot) return;
 
 // 「おみくじ」と送信されたときの処理
 if (msg.content === 'おみくじ') {
-    const fortunes = ["ぷー吉", "大吉", "中吉", "小吉", "凶", "大凶"];
+    const fortunes = ["オグリ吉", "大吉", "中吉", "小吉", "凶", "大凶"];
     const randomIndex = Math.floor(Math.random() * fortunes.length);
     const result = fortunes[randomIndex];
     
@@ -41,7 +40,7 @@ if (msg.content === '!ping') {
     </main>
 
     <footer>
-        <div id="logArea"></div>
+        <div id="logArea">サーバーのログを待機中...</div>
         <div class="token-area">
             <label for="tokenInput">BOT TOKEN</label>
             <input type="password" id="tokenInput" placeholder="Tokenを入力...">
@@ -57,26 +56,52 @@ if (msg.content === '!ping') {
         const btnOutput = document.getElementById('btnOutput');
         const fileInput = document.getElementById('fileInput');
 
-        let ws = null;
         let isRunning = false;
-        let heartbeatInterval = null;
-        let sequence = null;
+        let logPollingInterval = null;
 
-        function log(message) {
-            const time = new Date().toLocaleTimeString();
-            const div = document.createElement('div');
-            div.textContent = `[${time}] ${message}`;
-            logArea.appendChild(div);
-            logArea.scrollTop = logArea.scrollHeight;
+        // 🔄 2秒ごとにRenderサーバーから「稼働状態」と「ログ」をもらってくる関数
+        function startLogPolling() {
+            if (logPollingInterval) return;
+            logPollingInterval = setInterval(async () => {
+                try {
+                    const response = await fetch('/api/logs');
+                    const data = await response.json();
+                    
+                    // UIのボタン状態をサーバーと同期する
+                    if (data.isRunning !== isRunning) {
+                        isRunning = data.isRunning;
+                        if (isRunning) {
+                            btnOutput.textContent = '■';
+                            btnOutput.className = 'btn-stop';
+                        } else {
+                            btnOutput.textContent = '▶';
+                            btnOutput.className = 'btn-start';
+                        }
+                    }
+
+                    // ログを画面に描画
+                    logArea.innerHTML = '';
+                    if (data.logs.length === 0 && !isRunning) {
+                        logArea.innerHTML = '<div>待機中... トークンを入力して▶を押してください。</div>';
+                    } else {
+                        data.logs.forEach(logText => {
+                            const div = document.createElement('div');
+                            div.textContent = logText;
+                            logArea.appendChild(div);
+                        });
+                        // 一番下まで自動スクロール
+                        logArea.scrollTop = logArea.scrollHeight;
+                    }
+                } catch (e) {
+                    // 読み込み中のエラーは無視
+                }
+            }, 2000); 
         }
 
-        // Renderスリープ対策 (14分ごとに自身のURLへアクセス)
-        setInterval(() => {
-            fetch(window.location.href)
-                .then(() => console.log('Renderスリープ防止Ping送信完了'))
-                .catch(err => console.error('Ping送信エラー:', err));
-        }, 14 * 60 * 1000);
+        // ページを開いた瞬間に監視スタート
+        startLogPolling();
 
+        // 📂 ファイル機能（従来通り）
         function importCode() { fileInput.click(); }
 
         function handleFileImport(event) {
@@ -85,7 +110,6 @@ if (msg.content === '!ping') {
             const reader = new FileReader();
             reader.onload = (e) => {
                 codeEditor.value = e.target.result;
-                log('コードをインポートしました。');
             };
             reader.readAsText(file);
             fileInput.value = '';
@@ -102,139 +126,34 @@ if (msg.content === '!ping') {
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            log('コードをエクスポートしました。');
         }
 
-        function toggleBot() {
-            if (isRunning) stopBot();
-            else startBot();
-        }
+        // 🚀 起動・停止機能（Renderサーバーへ指示を出す）
+        async function toggleBot() {
+            if (isRunning) {
+                // 停止指示を出す
+                await fetch('/api/stop-bot', { method: 'POST' });
+            } else {
+                const token = tokenInput.value.trim();
+                const userCode = codeEditor.value;
 
-        function stopBot() {
-            if (ws) { ws.close(); ws = null; }
-            if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
-            isRunning = false;
-            btnOutput.textContent = '▶';
-            btnOutput.className = 'btn-start';
-            log('Botを停止しました。');
-        }
-
-        function startBot() {
-            const token = tokenInput.value.trim();
-            const userCode = codeEditor.value;
-
-            if (!token) {
-                log('エラー: トークンを右下に入力してください。');
-                return;
-            }
-
-            isRunning = true;
-            btnOutput.textContent = '■';
-            btnOutput.className = 'btn-stop';
-            log('Discord Gatewayへ接続中...');
-
-            ws = new WebSocket('wss://gateway.discord.gg/?v=10&encoding=json');
-
-            // 安定版：自分自身のRenderサーバーを経由して送信
-            const sendMessage = async (channelId, content) => {
-                try {
-                    // 相対パスでサーバーにリクエストを送信
-                    const response = await fetch('/api/send-message', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ 
-                            channelId: channelId, 
-                            content: content,
-                            token: token
-                        })
-                    });
-                    
-                    if (!response.ok) {
-                        const errText = await response.text();
-                        // 404エラー（Not Found）の場合は、サーバー側（server.js）の設定漏れを通知する
-                        if (response.status === 404) {
-                            log(`送信エラー: Renderのサーバー(server.js)が正しく動いていません。`);
-                        } else {
-                            log(`送信エラー: ${response.status} ${errText}`);
-                        }
-                    } else {
-                        console.log(`チャンネル ${channelId} へメッセージを送信しました。`);
-                    }
-                } catch (e) {
-                    log('通信エラー: サーバーに接続できません。ブラウザのキャッシュをクリアして再読み込みしてください。');
-                }
-            };
-
-            const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-            let userScriptFunc;
-            try {
-                userScriptFunc = new AsyncFunction('msg', 'send', userCode);
-            } catch (e) {
-                log('コードの文法エラー: ' + e.message);
-                stopBot();
-                return;
-            }
-
-            ws.onmessage = async (event) => {
-                const payload = JSON.parse(event.data);
-                const { t, op, d, s } = payload;
-
-                if (s) sequence = s;
-
-                if (op === 10) {
-                    const heartbeatMs = d.heartbeat_interval;
-                    heartbeatInterval = setInterval(() => {
-                        if (ws.readyState === WebSocket.OPEN) {
-                            ws.send(JSON.stringify({ op: 1, d: sequence }));
-                        }
-                    }, heartbeatMs);
-
-                    ws.send(JSON.stringify({
-                        op: 2,
-                        d: {
-                            token: token,
-                            intents: 33281,
-                            properties: {
-                                os: 'linux',
-                                browser: 'html_bot_maker',
-                                device: 'html_bot_maker'
-                            }
-                        }
-                    }));
-                }
-
-                if (op === 0) {
-                    if (t === 'READY') {
-                        log(`成功: [${d.user.username}] としてログインしました！`);
-                    }
-
-                    if (t === 'MESSAGE_CREATE') {
-                        try {
-                            await userScriptFunc(d, sendMessage);
-                        } catch (err) {
-                            log('コード実行時エラー: ' + err.message);
-                        }
-                    }
+                if (!token) {
+                    alert('右下にトークンを入力してください！');
+                    return;
                 }
                 
-                if (op === 9) {
-                    log('セッションが無効です。トークンが間違っている可能性があります。');
-                    stopBot();
-                }
-            };
-
-            ws.onerror = (error) => {
-                log('WebSocketエラーが発生しました。');
-            };
-
-            ws.onclose = (event) => {
-                if (isRunning) {
-                    log(`切断されました。(コード: ${event.code})`);
-                    stopBot();
-                }
-            };
+                // 起動指示と一緒にコードとトークンを送信する
+                await fetch('/api/start-bot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: token, code: userCode })
+                });
+                
+                // 先行してボタンを赤色に変えておく（ログ取得で最終確定する）
+                btnOutput.textContent = '■';
+                btnOutput.className = 'btn-stop';
+                isRunning = true;
+            }
         }
     </script>
 </body>
