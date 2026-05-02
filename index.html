@@ -12,7 +12,7 @@
         <button id="btnOutput" class="btn-start" onclick="toggleBot()">▶</button>
         <button onclick="importCode()">インポート</button>
         <button onclick="exportCode()">エクスポート</button>
-        <!-- 復旧: Discord Developer Portalへのリンクボタン -->
+        <!-- Discord Developer Portalへのリンクボタン -->
         <button class="btn-link" onclick="window.open('https://discord.com/developers/applications', '_blank')">Botリンク</button>
     </header>
 
@@ -135,9 +135,10 @@ if (msg.content === '!ping') {
 
             ws = new WebSocket('wss://gateway.discord.gg/?v=10&encoding=json');
 
-            // 安定版：自分自身のRenderサーバーを経由して送信 (Failed to fetch対策)
+            // 安定版：自分自身のRenderサーバーを経由して送信
             const sendMessage = async (channelId, content) => {
                 try {
+                    // 相対パスでサーバーにリクエストを送信
                     const response = await fetch('/api/send-message', {
                         method: 'POST',
                         headers: {
@@ -152,12 +153,17 @@ if (msg.content === '!ping') {
                     
                     if (!response.ok) {
                         const errText = await response.text();
-                        log(`送信エラー: ${response.status} ${errText}`);
+                        // 404エラー（Not Found）の場合は、サーバー側（server.js）の設定漏れを通知する
+                        if (response.status === 404) {
+                            log(`送信エラー: Renderのサーバー(server.js)が正しく動いていません。`);
+                        } else {
+                            log(`送信エラー: ${response.status} ${errText}`);
+                        }
                     } else {
                         console.log(`チャンネル ${channelId} へメッセージを送信しました。`);
                     }
                 } catch (e) {
-                    log('送信リクエストエラー: ' + e.message);
+                    log('通信エラー: サーバーに接続できません。ブラウザのキャッシュをクリアして再読み込みしてください。');
                 }
             };
 
