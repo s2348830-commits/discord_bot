@@ -16,30 +16,19 @@
         <button class="btn-link" onclick="window.open('https://discord.com/developers/applications', '_blank')">🤖Botリンク</button>
     </header>
 
+    <!-- タブエリアの追加 -->
+    <div id="tabsContainer" class="tabs-container">
+        <!-- タブがここに動的に生成されます -->
+    </div>
+
     <main>
-        <textarea id="codeEditor" spellcheck="false" placeholder="ここにJavaScriptコードを入力...">
-// eventType: 'MESSAGE' または 'INTERACTION'
-// send(channel_id, content, components, embeds): メッセージ送信
-
-if (eventType === 'MESSAGE') {
-    if (data.author.bot) return;
-
-    if (data.content === '画像テスト') {
-        // ファイルマネージャーでコピーしたURLをここに貼り付け
-        const embeds = [{
-            title: "保存済み画像",
-            image: { url: "ここにデータURLを貼り付け" }
-        }];
-        send(data.channel_id, "画像を表示します", null, embeds);
-    }
-}
-</textarea>
+        <textarea id="codeEditor" spellcheck="false" placeholder="ここにJavaScriptコードを入力..."></textarea>
     </main>
 
     <footer>
         <div id="logArea">サーバーのログを待機中...</div>
         <div class="token-area">
-            <label for="tokenInput">BOT TOKEN</label>
+            <label for="tokenInput" id="tokenLabel">BOT TOKEN</label>
             <input type="password" id="tokenInput" placeholder="Tokenを入力...">
         </div>
     </footer>
@@ -84,20 +73,151 @@ if (eventType === 'MESSAGE') {
         const btnOutput = document.getElementById('btnOutput');
         const fileInput = document.getElementById('fileInput');
         const imgInput = document.getElementById('imageUploadInput');
+        const tabsContainer = document.getElementById('tabsContainer');
+        const tokenLabel = document.getElementById('tokenLabel');
         
-        let isRunning = false;
         let logPollingInterval = null;
         let db;
 
-        // --- IndexedDB 初期化 (画像永続化用) ---
-        const request = indexedDB.open("BotMakerFiles", 1);
+        // Bot管理用データ
+        let bots = [];
+        let currentBotId = null;
+        let runningStatusMap = {};
+
+        const defaultCode = `// eventType: 'MESSAGE' または 'INTERACTION'
+// send(channel_id, content, components, embeds): メッセージ送信
+
+if (eventType === 'MESSAGE') {
+    if (data.author.bot) return;
+
+    if (data.content === '画像テスト') {
+        const embeds = [{
+            title: "保存済み画像",
+            image: { url: "ここにデータURLを貼り付け" }
+        }];
+        send(data.channel_id, "画像を表示します", null, embeds);
+    }
+}`;
+
+        // --- IndexedDB 初期化 (画像＆Bot設定保存用) ---
+        // バージョンを2に上げてbotsストアを追加[cite: 1]
+        const request = indexedDB.open("BotMakerFiles", 2);
         request.onupgradeneeded = (e) => {
             db = e.target.result;
-            db.createObjectStore("images", { keyPath: "name" });
+            if (!db.objectStoreNames.contains("images")) {
+                db.createObjectStore("images", { keyPath: "name" });
+            }
+            if (!db.objectStoreNames.contains("bots")) {
+                db.createObjectStore("bots", { keyPath: "id" });
+            }
         };
-        request.onsuccess = (e) => { db = e.target.result; };
+        request.onsuccess = (e) => { 
+            db = e.target.result; 
+            loadBotsFromDB();
+        };
 
-        // --- ファイルマネージャー制御 ---
+        // --- Botデータ管理 ---
+        function loadBotsFromDB() {
+            const store = db.transaction(["bots"], "readonly").objectStore("bots");
+            const req = store.getAll();
+            req.onsuccess = () => {
+                bots = req.result;
+                if (bots.length === 0) {
+                    addNewBot(); // 初期Botの作成
+                } else {
+                    renderTabs();
+                    switchTab(bots[0].id);
+                }
+            };
+        }
+
+        function saveCurrentBotToDB() {
+            if (!currentBotId) return;
+            const bot = bots.find(b => b.id === currentBotId);
+            if (bot) {
+                bot.code = codeEditor.value;
+                bot.token = tokenInput.value;
+                const transaction = db.transaction(["bots"], "readwrite");
+                transaction.objectStore("bots").put(bot);
+            }
+        }
+
+        function addNewBot() {
+            const newId = 'bot_' + Date.now();
+            const newBot = {
+                id: newId,
+                name: 'Bot ' + (bots.length + 1),
+                code: defaultCode,
+                token: ''
+            };
+            bots.push(newBot);
+            const transaction = db.transaction(["bots"], "readwrite");
+            transaction.objectStore("bots").put(newBot);
+            transaction.oncomplete = () => {
+                renderTabs();
+                switchTab(newId);
+            };
+        }
+
+        function deleteBot(id, event) {
+            event.stopPropagation();
+            if (bots.length <= 1) {
+                alert("最後のBotは削除できません。");
+                return;
+            }
+            if (confirm("このBotを削除しますか？")) {
+                bots = bots.filter(b => b.id !== id);
+                db.transaction(["bots"], "readwrite").objectStore("bots").delete(id);
+                renderTabs();
+                switchTab(bots[0].id);
+            }
+        }
+
+        // --- タブUI制御 ---
+        function renderTabs() {
+            tabsContainer.innerHTML = '';
+            bots.forEach(bot => {
+                const tab = document.createElement('div');
+                tab.className = 'tab' + (bot.id === currentBotId ? ' active' : '');
+                tab.onclick = () => switchTab(bot.id);
+
+                const title = document.createElement('span');
+                title.textContent = bot.name;
+                
+                const delBtn = document.createElement('span');
+                delBtn.className = 'tab-close';
+                delBtn.textContent = '✕';
+                delBtn.onclick = (e) => deleteBot(bot.id, e);
+
+                tab.appendChild(title);
+                tab.appendChild(delBtn);
+                tabsContainer.appendChild(tab);
+            });
+
+            const addBtn = document.createElement('div');
+            addBtn.className = 'tab-add';
+            addBtn.textContent = '＋ 追加';
+            addBtn.onclick = addNewBot;
+            tabsContainer.appendChild(addBtn);
+        }
+
+        function switchTab(id) {
+            currentBotId = id;
+            const bot = bots.find(b => b.id === id);
+            if (bot) {
+                codeEditor.value = bot.code || '';
+                tokenInput.value = bot.token || '';
+                tokenLabel.textContent = bot.name + " TOKEN";
+            }
+            renderTabs();
+            updatePlayButton();
+        }
+
+        // 入力時に自動保存
+        codeEditor.addEventListener('input', saveCurrentBotToDB);
+        tokenInput.addEventListener('input', saveCurrentBotToDB);
+
+        // --- ファイルマネージャー制御 (既存機能維持) ---[cite: 1]
         function openFileManager() {
             document.getElementById('fileManagerModal').style.display = 'flex';
             document.getElementById('overlay').style.display = 'block';
@@ -158,17 +278,24 @@ if (eventType === 'MESSAGE') {
         }
 
         // --- Bot 制御機能 ---
+        function updatePlayButton() {
+            const isRunning = runningStatusMap[currentBotId] || false;
+            btnOutput.textContent = isRunning ? '■' : '▶';
+            btnOutput.className = isRunning ? 'btn-stop' : 'btn-start';
+        }
+
         function startLogPolling() {
             if (logPollingInterval) return;
             logPollingInterval = setInterval(async () => {
                 try {
                     const response = await fetch('/api/logs');
                     const data = await response.json();
-                    if (data.isRunning !== isRunning) {
-                        isRunning = data.isRunning;
-                        btnOutput.textContent = isRunning ? '■' : '▶';
-                        btnOutput.className = isRunning ? 'btn-stop' : 'btn-start';
-                    }
+                    
+                    // 個別Botの稼働状態を更新
+                    runningStatusMap = data.runningBots;
+                    updatePlayButton();
+
+                    // ログエリアの更新
                     logArea.innerHTML = '';
                     data.logs.forEach(log => {
                         const div = document.createElement('div');
@@ -182,15 +309,30 @@ if (eventType === 'MESSAGE') {
         startLogPolling();
 
         async function toggleBot() {
+            if (!currentBotId) return;
+            const bot = bots.find(b => b.id === currentBotId);
             const token = tokenInput.value.trim();
+            const isRunning = runningStatusMap[currentBotId] || false;
+
             if (isRunning) {
-                await fetch('/api/stop-bot', { method: 'POST' });
+                // 特定のBotだけを停止するリクエスト[cite: 1]
+                await fetch('/api/stop-bot', { 
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: currentBotId })
+                });
             } else {
                 if (!token) { alert('トークンが必要です'); return; }
+                // 固有IDと名前を付与して起動リクエスト
                 await fetch('/api/start-bot', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token: token, code: codeEditor.value })
+                    body: JSON.stringify({ 
+                        id: currentBotId,
+                        name: bot.name,
+                        token: token, 
+                        code: codeEditor.value 
+                    })
                 });
             }
         }
@@ -198,7 +340,10 @@ if (eventType === 'MESSAGE') {
         function importCode() { fileInput.click(); }
         function handleFileImport(e) {
             const reader = new FileReader();
-            reader.onload = (ev) => { codeEditor.value = ev.target.result; };
+            reader.onload = (ev) => { 
+                codeEditor.value = ev.target.result; 
+                saveCurrentBotToDB();
+            };
             reader.readAsText(e.target.files[0]);
         }
         function exportCode() {

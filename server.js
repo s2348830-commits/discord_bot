@@ -1,52 +1,51 @@
 const express = require('express');
 const path = require('path');
-const WebSocket = require('ws'); //[cite: 10]
+const WebSocket = require('ws'); 
 const app = express();
 
 const PORT = process.env.PORT || 3000;
 
-// ★画像(Data URL)などの大きなデータを扱えるように制限を10MBに拡大 //[cite: 10]
 app.use(express.json({ limit: '10mb' })); 
-app.use(express.static(path.join(__dirname))); //[cite: 10]
+app.use(express.static(path.join(__dirname))); 
 
-let botWS = null;
-let heartbeatInterval = null;
-let isBotRunning = false;
+// Map構造で複数のBotを管理する「シェアハウス」化[cite: 2]
+const botConnections = new Map(); 
 let serverLogs = []; 
 
-// ログ記録用の関数 //[cite: 10]
-function addLog(message) {
+// どのBotのログかが分かるように関数を改修[cite: 2]
+function addLog(botName, message) {
     const time = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).split(' ')[1];
-    serverLogs.push(`[${time}] ${message}`);
-    if (serverLogs.length > 100) serverLogs.shift(); 
-    console.log(message);
+    const logText = `[${time}] [${botName}] ${message}`;
+    serverLogs.push(logText);
+    if (serverLogs.length > 200) serverLogs.shift(); // 少しログ件数を拡張
+    console.log(logText);
 }
 
-// 📱スマホから「起動」依頼を受け取る窓口 //[cite: 10]
 app.post('/api/start-bot', (req, res) => {
-    const { token, code } = req.body;
-    if (!token) return res.status(400).send('Token is required'); //[cite: 10]
+    // フロントからIDと名前も受け取る
+    const { id, name, token, code } = req.body;
+    if (!id || !token) return res.status(400).send('ID and Token are required'); 
 
-    if (botWS) {
-        botWS.close();
-        clearInterval(heartbeatInterval);
-        botWS = null;
+    // 既存のBotを全体切断するのではなく、該当IDのBotのみ上書き切断
+    if (botConnections.has(id)) {
+        const existing = botConnections.get(id);
+        if (existing.ws) existing.ws.close();
+        clearInterval(existing.heartbeatInterval);
+        botConnections.delete(id);
     }
 
-    serverLogs = []; 
-    addLog('Renderサーバー上でDiscord Gatewayへ接続中...'); //[cite: 10]
+    addLog(name, 'Renderサーバー上でDiscord Gatewayへ接続中...'); 
 
     const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
     let userScriptFunc;
     try {
-        // 引数: eventType, data, send, reply //[cite: 10]
         userScriptFunc = new AsyncFunction('eventType', 'data', 'send', 'reply', code);
     } catch (e) {
-        addLog('コードの文法エラー: ' + e.message);
+        addLog(name, 'コードの文法エラー: ' + e.message);
         return res.status(400).send('Syntax Error');
     }
 
-    // メッセージ送信関数 //[cite: 10]
+    // メッセージ送信関数
     const sendMessage = async (channelId, content, components = null, embeds = null) => {
         try {
             const body = {};
@@ -64,16 +63,16 @@ app.post('/api/start-bot', (req, res) => {
             });
             if (!response.ok) {
                 const errText = await response.text();
-                addLog(`送信エラー: ${response.status} ${errText}`);
+                addLog(name, `送信エラー: ${response.status} ${errText}`);
             } else {
-                addLog(`メッセージを送信しました`);
+                addLog(name, `メッセージを送信しました`);
             }
         } catch (e) {
-            addLog('通信エラー: ' + e.message);
+            addLog(name, '通信エラー: ' + e.message);
         }
     };
 
-    // こっそり返信関数 //[cite: 10]
+    // ボタン返信関数
     const replyInteraction = async (interactionId, interactionToken, content, components = null, embeds = null) => {
         try {
             const dataPayload = { flags: 64 }; 
@@ -88,17 +87,21 @@ app.post('/api/start-bot', (req, res) => {
             });
             if (!response.ok) {
                 const errText = await response.text();
-                addLog(`ボタン応答エラー: ${response.status} ${errText}`);
+                addLog(name, `ボタン応答エラー: ${response.status} ${errText}`);
             } else {
-                addLog(`ボタンの応答完了(こっそり表示)`);
+                addLog(name, `ボタンの応答完了`);
             }
         } catch (e) {
-            addLog('インタラクション通信エラー: ' + e.message);
+            addLog(name, 'インタラクション通信エラー: ' + e.message);
         }
     };
 
-    botWS = new WebSocket('wss://gateway.discord.gg/?v=10&encoding=json'); //[cite: 10]
+    const botWS = new WebSocket('wss://gateway.discord.gg/?v=10&encoding=json'); 
     let sequence = null;
+    let heartbeatInterval = null;
+
+    // Mapに接続を登録
+    botConnections.set(id, { ws: botWS, heartbeatInterval: null, isRunning: false, name: name });
 
     botWS.on('message', async (messageData) => {
         const payload = JSON.parse(messageData);
@@ -112,6 +115,10 @@ app.post('/api/start-bot', (req, res) => {
                     botWS.send(JSON.stringify({ op: 1, d: sequence }));
                 }
             }, heartbeatMs);
+            
+            // Map内のインターバルを更新
+            const botData = botConnections.get(id);
+            if (botData) botData.heartbeatInterval = heartbeatInterval;
 
             botWS.send(JSON.stringify({
                 op: 2,
@@ -125,61 +132,72 @@ app.post('/api/start-bot', (req, res) => {
 
         if (op === 0) {
             if (t === 'READY') {
-                addLog(`成功: [${d.user.username}] として稼働開始✨`); //[cite: 10]
-                isBotRunning = true;
+                addLog(name, `成功: [${d.user.username}] として稼働開始✨`); 
+                const botData = botConnections.get(id);
+                if (botData) botData.isRunning = true;
             }
             if (t === 'MESSAGE_CREATE') {
                 try { await userScriptFunc('MESSAGE', d, sendMessage, replyInteraction); } 
-                catch (err) { addLog('コード実行時エラー: ' + err.message); }
+                catch (err) { addLog(name, 'コード実行時エラー: ' + err.message); }
             }
             if (t === 'INTERACTION_CREATE') {
                 try { await userScriptFunc('INTERACTION', d, sendMessage, replyInteraction); } 
-                catch (err) { addLog('コード実行時エラー: ' + err.message); }
+                catch (err) { addLog(name, 'コード実行時エラー: ' + err.message); }
             }
         }
 
         if (op === 9) {
-            addLog('セッションが無効です。');
-            isBotRunning = false;
+            addLog(name, 'セッションが無効です。');
+            const botData = botConnections.get(id);
+            if (botData) botData.isRunning = false;
         }
     });
 
     botWS.on('close', (code) => {
-        addLog(`切断されました。(コード: ${code})`);
-        isBotRunning = false;
+        addLog(name, `切断されました。(コード: ${code})`);
+        const botData = botConnections.get(id);
+        if (botData) botData.isRunning = false;
     });
 
     botWS.on('error', (err) => {
-        addLog('WebSocketエラー: ' + err.message);
-        isBotRunning = false;
+        addLog(name, 'WebSocketエラー: ' + err.message);
+        const botData = botConnections.get(id);
+        if (botData) botData.isRunning = false;
     });
 
     res.status(200).send('Bot Started');
 });
 
+// 特定のBotのみ停止する処理[cite: 2]
 app.post('/api/stop-bot', (req, res) => {
-    if (botWS) {
-        botWS.close();
-        clearInterval(heartbeatInterval);
-        botWS = null;
-        addLog('Botを停止しました。'); //[cite: 10]
+    const { id } = req.body;
+    if (botConnections.has(id)) {
+        const botData = botConnections.get(id);
+        if (botData.ws) botData.ws.close();
+        clearInterval(botData.heartbeatInterval);
+        addLog(botData.name, 'Botを手動停止しました。'); 
+        botConnections.delete(id);
     }
-    isBotRunning = false;
     res.status(200).send('Stopped');
 });
 
+// 全Botの稼働状態をMap形式でフロントエンドへ返却する
 app.get('/api/logs', (req, res) => {
-    res.json({ isRunning: isBotRunning, logs: serverLogs }); //[cite: 10]
+    const runningBots = {};
+    for (const [id, botData] of botConnections.entries()) {
+        runningBots[id] = botData.isRunning;
+    }
+    res.json({ runningBots, logs: serverLogs }); 
 });
 
 app.get('/ping', (req, res) => {
-    res.status(200).send('pong'); //[cite: 10]
+    res.status(200).send('pong'); 
 });
 
 app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html')); //[cite: 10]
+    res.sendFile(path.join(__dirname, 'index.html')); 
 });
 
 app.listen(PORT, () => {
-    console.log(`サーバーがポート ${PORT} で起動しました。`); //[cite: 10]
+    console.log(`サーバーがポート ${PORT} で起動しました。`); 
 });
