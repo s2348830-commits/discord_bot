@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -10,12 +11,14 @@
             background-color: #2a4d6c !important;
             color: #ffffff;
         }
+
         .fm-btn:disabled {
             opacity: 0.5;
             cursor: not-allowed;
         }
     </style>
 </head>
+
 <body>
 
     <header>
@@ -23,7 +26,8 @@
         <button onclick="importCode()">📥インポート</button>
         <button onclick="exportCode()">📥エクスポート</button>
         <button onclick="openFileManager()">📁ファイル</button>
-        <button class="btn-link" onclick="window.open('https://discord.com/developers/applications', '_blank')">🤖Botリンク</button>
+        <button class="btn-link"
+            onclick="window.open('https://discord.com/developers/applications', '_blank')">🤖Botリンク</button>
     </header>
 
     <div id="tabsContainer" class="tabs-container"></div>
@@ -56,7 +60,8 @@
             <button id="btnCut" class="fm-btn" onclick="cutSelectedFile()" disabled>✂ 切り取り</button>
             <button id="btnCopy" class="fm-btn" onclick="copySelectedFile()" disabled>📋 コピー</button>
             <button id="btnPaste" class="fm-btn" onclick="pasteFile()" disabled>📋 貼り付け</button>
-            <button id="btnDelete" class="fm-btn" onclick="deleteSelectedFile()" disabled style="color: #ff4d4d;">🗑 削除</button>
+            <button id="btnDelete" class="fm-btn" onclick="deleteSelectedFile()" disabled style="color: #ff4d4d;">🗑
+                削除</button>
         </div>
         <div class="fm-content">
             <table class="fm-table">
@@ -83,7 +88,7 @@
         const imgInput = document.getElementById('imageUploadInput');
         const tabsContainer = document.getElementById('tabsContainer');
         const tokenLabel = document.getElementById('tokenLabel');
-        
+
         let logPollingInterval = null;
         let db;
         let bots = [];
@@ -107,12 +112,12 @@ if (eventType === 'MESSAGE') {
     }
 }`;
 
-        let editor; 
+        let editor;
         let isEditorReady = false;
 
         // Monaco Editor 設定
-        require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' }});
-        require(['vs/editor/editor.main'], function() {
+        require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
+        require(['vs/editor/editor.main'], function () {
             editor = monaco.editor.create(document.getElementById('editorContainer'), {
                 value: '',
                 language: 'javascript',
@@ -138,8 +143,8 @@ if (eventType === 'MESSAGE') {
             if (!db.objectStoreNames.contains("images")) db.createObjectStore("images", { keyPath: "name" });
             if (!db.objectStoreNames.contains("bots")) db.createObjectStore("bots", { keyPath: "id" });
         };
-        request.onsuccess = (e) => { 
-            db = e.target.result; 
+        request.onsuccess = (e) => {
+            db = e.target.result;
             loadBotsFromDB();
         };
 
@@ -234,9 +239,9 @@ if (eventType === 'MESSAGE') {
             document.getElementById('overlay').style.display = 'none';
         }
 
-        function triggerImageUpload() { 
+        function triggerImageUpload() {
             if (!db) { alert("データベースを準備しています。数秒待ってからやり直してください。"); return; }
-            imgInput.click(); 
+            imgInput.click();
         }
 
         async function processImageUpload(event) {
@@ -312,10 +317,10 @@ if (eventType === 'MESSAGE') {
                     clipboardFile = { action: 'cut', data: req.result };
                     const delTx = db.transaction(["images"], "readwrite");
                     delTx.objectStore("images").delete(selectedFileName);
-                    delTx.oncomplete = () => { 
-                        selectedFileName = null; 
-                        updateToolbarButtons(); 
-                        refreshFileList(); 
+                    delTx.oncomplete = () => {
+                        selectedFileName = null;
+                        updateToolbarButtons();
+                        refreshFileList();
                         alert(`「${clipboardFile.data.name}」を切り取りました。`);
                     };
                 }
@@ -327,9 +332,9 @@ if (eventType === 'MESSAGE') {
             const store = db.transaction(["images"], "readonly").objectStore("images");
             const req = store.get(selectedFileName);
             req.onsuccess = () => {
-                if (req.result) { 
-                    clipboardFile = { action: 'copy', data: req.result }; 
-                    updateToolbarButtons(); 
+                if (req.result) {
+                    clipboardFile = { action: 'copy', data: req.result };
+                    updateToolbarButtons();
                     alert(`「${clipboardFile.data.name}」をコピーしました。`);
                 }
             };
@@ -376,19 +381,29 @@ if (eventType === 'MESSAGE') {
 
         // --- 実行ロジック ---
         async function resolveImagePaths(code) {
-            const pattern = /image[\\\/]([^"'\s\)]+)/g;
+            // 改良版正規表現: image/ または image\ で始まるパスを抽出
+            const pattern = /image[\\\/]+([^"'\s\)]+)/g;
             const matches = code.match(pattern);
             if (!matches) return code;
+
             const images = await new Promise(res => {
                 const req = db.transaction(["images"], "readonly").objectStore("images").getAll();
                 req.onsuccess = () => res(req.result);
             });
+
             let processedCode = code;
-            matches.forEach(match => {
+            for (const match of matches) {
+                // 先頭の "image/" や "image\\" 部分を確実に削除してファイル名を取り出す
                 const fileName = match.replace(/^image[\\\/]+/, "");
                 const entry = images.find(i => i.name === fileName);
-                if (entry) processedCode = processedCode.split(match).join(entry.data);
-            });
+
+                if (entry) {
+                    // 見つかった場合、コード内のパスをデータURL（Base64）に置換
+                    processedCode = processedCode.split(match).join(entry.data);
+                } else {
+                    console.error(`画像が見つかりません: ${fileName}`);
+                }
+            }
             return processedCode;
         }
 
@@ -411,8 +426,8 @@ if (eventType === 'MESSAGE') {
                         div.textContent = log; logArea.appendChild(div);
                     });
                     logArea.scrollTop = logArea.scrollHeight;
-                } catch (e) {}
-            }, 2000); 
+                } catch (e) { }
+            }, 2000);
         }
         startLogPolling();
 
@@ -448,4 +463,5 @@ if (eventType === 'MESSAGE') {
         }
     </script>
 </body>
+
 </html>
