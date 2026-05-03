@@ -381,27 +381,29 @@ if (eventType === 'MESSAGE') {
 
         // --- 実行ロジック ---
         async function resolveImagePaths(code) {
-            // 改良版正規表現: image/ または image\ で始まるパスを抽出
-            const pattern = /image[\\\/]+([^"'\s\)]+)/g;
+            // 改良版正規表現: image/ または image\\ で始まるパスを広範囲にキャッチ
+            const pattern = /image[\\\/]+[^\s"'\)\};,]+/g;
             const matches = code.match(pattern);
             if (!matches) return code;
 
+            // IndexedDBから全画像を取得
             const images = await new Promise(res => {
-                const req = db.transaction(["images"], "readonly").objectStore("images").getAll();
+                const transaction = db.transaction(["images"], "readonly");
+                const req = transaction.objectStore("images").getAll();
                 req.onsuccess = () => res(req.result);
             });
 
             let processedCode = code;
             for (const match of matches) {
-                // 先頭の "image/" や "image\\" 部分を確実に削除してファイル名を取り出す
-                const fileName = match.replace(/^image[\\\/]+/, "");
+                // パスからファイル名のみを抽出 (例: "image/test.png" -> "test.png")
+                const fileName = match.replace(/^image[\\\/]+/, "").replace(/\\+$/, "");
                 const entry = images.find(i => i.name === fileName);
 
                 if (entry) {
-                    // 見つかった場合、コード内のパスをデータURL（Base64）に置換
+                    // 文字列置換時に、元のソースコードにある「image/ファイル名」をBase64データURLに差し替え
                     processedCode = processedCode.split(match).join(entry.data);
                 } else {
-                    console.error(`画像が見つかりません: ${fileName}`);
+                    console.warn(`画像が見つかりません: ${fileName}`);
                 }
             }
             return processedCode;
