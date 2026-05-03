@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Discord Bot Maker</title>
     <link rel="stylesheet" href="style.css">
+    <style>
+        /* 追加・選択時のボタンスタイルや一覧のスタイル調整 */
+        .fm-row.selected {
+            background-color: #2a4d6c !important;
+            color: #ffffff;
+        }
+        .fm-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+    </style>
 </head>
 <body>
 
@@ -16,12 +27,9 @@
         <button class="btn-link" onclick="window.open('https://discord.com/developers/applications', '_blank')">🤖Botリンク</button>
     </header>
 
-    <!-- タブエリア -->
     <div id="tabsContainer" class="tabs-container"></div>
 
-    <!-- mainのpaddingをなくし、エディタを画面いっぱいに広げます -->
     <main style="padding: 0; display: flex; flex-direction: column;">
-        <!-- textareaの代わりにMonaco Editorをマウントする場所 -->
         <div id="editorContainer" style="flex: 1; width: 100%; min-height: 400px; text-align: left;"></div>
     </main>
 
@@ -33,11 +41,9 @@
         </div>
     </footer>
 
-    <!-- 隠しインプット -->
     <input type="file" id="fileInput" accept=".js,.txt" onchange="handleFileImport(event)">
     <input type="file" id="imageUploadInput" accept="image/*" onchange="processImageUpload(event)" style="display:none">
 
-    <!-- ファイルマネージャーモーダル -->
     <div id="overlay" class="overlay" onclick="closeFileManager()"></div>
     <div id="fileManagerModal">
         <div class="fm-title-bar">
@@ -47,9 +53,10 @@
         <div class="fm-toolbar">
             <button class="fm-btn fm-btn-primary" onclick="triggerImageUpload()">＋ 新規作成</button>
             <div style="height:20px; width:1px; background:#ddd;"></div>
-            <button class="fm-btn">✂ 切り取り</button>
-            <button class="fm-btn">📋 コピー</button>
-            <button class="fm-btn">🗑 削除</button>
+            <button id="btnCut" class="fm-btn" onclick="cutSelectedFile()" disabled>✂ 切り取り</button>
+            <button id="btnCopy" class="fm-btn" onclick="copySelectedFile()" disabled>📋 コピー</button>
+            <button id="btnPaste" class="fm-btn" onclick="pasteFile()" disabled>📋 貼り付け</button>
+            <button id="btnDelete" class="fm-btn" onclick="deleteSelectedFile()" disabled style="color: #ff4d4d;">🗑 削除</button>
         </div>
         <div class="fm-content">
             <table class="fm-table">
@@ -66,7 +73,6 @@
         </div>
     </div>
 
-    <!-- ▼ VS Codeのエンジン「Monaco Editor」を読み込む ▼ -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
 
     <script>
@@ -80,11 +86,13 @@
         
         let logPollingInterval = null;
         let db;
-
-        // Bot管理用データ
         let bots = [];
         let currentBotId = null;
         let runningStatusMap = {};
+
+        // クリップボード・ファイル操作用の変数
+        let selectedFileName = null;
+        let clipboardFile = null; // { action: 'cut'|'copy', data: fileEntry }
 
         const defaultCode = `// eventType: 'MESSAGE' または 'INTERACTION'
 // send(channel_id, content, components, embeds): メッセージ送信
@@ -94,15 +102,14 @@ if (eventType === 'MESSAGE') {
 
     if (data.content === '画像テスト') {
         const embeds = [{
-            title: "保存済み画像",
-            image: { url: "ここにデータURLを貼り付け" }
+            title: "保存済み画像を表示",
+            image: { url: "image\\\\test.png" } // image\\ファイル名.png で指定可能
         }];
         send(data.channel_id, "画像を表示します", null, embeds);
     }
 }`;
 
-        // --- Monaco Editor の初期化 ---
-        let editor; // エディタ本体を格納する変数
+        let editor; 
         let isEditorReady = false;
 
         require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' }});
@@ -110,22 +117,19 @@ if (eventType === 'MESSAGE') {
             editor = monaco.editor.create(document.getElementById('editorContainer'), {
                 value: '',
                 language: 'javascript',
-                theme: 'vs-dark', // VS Codeのダークテーマを指定！
-                automaticLayout: true, // 画面サイズ変更に自動で合わせる
-                minimap: { enabled: false }, // 画面を広く使うため右側のミニマップは一旦オフ
+                theme: 'vs-dark',
+                automaticLayout: true,
+                minimap: { enabled: false },
                 fontSize: 14,
-                wordWrap: 'on', // 右端で折り返す
+                wordWrap: 'on',
                 scrollBeyondLastLine: false
             });
 
-            // エディタの文字が変更されたら自動保存
             editor.onDidChangeModelContent(() => {
                 saveCurrentBotToDB();
             });
 
             isEditorReady = true;
-
-            // データベースの読み込みがエディタより先に終わっていた場合、ここでコードをセット
             if (currentBotId && bots.length > 0) {
                 const bot = bots.find(b => b.id === currentBotId);
                 if (bot && editor.getValue() !== bot.code) {
@@ -134,7 +138,6 @@ if (eventType === 'MESSAGE') {
             }
         });
 
-        // --- IndexedDB 初期化 ---
         const request = indexedDB.open("BotMakerFiles", 2);
         request.onupgradeneeded = (e) => {
             db = e.target.result;
@@ -150,7 +153,6 @@ if (eventType === 'MESSAGE') {
             loadBotsFromDB();
         };
 
-        // --- Botデータ管理 ---
         function loadBotsFromDB() {
             const store = db.transaction(["bots"], "readonly").objectStore("bots");
             const req = store.getAll();
@@ -166,11 +168,10 @@ if (eventType === 'MESSAGE') {
         }
 
         function saveCurrentBotToDB() {
-            // エディタの準備がまだなら保存しない
             if (!currentBotId || !isEditorReady) return;
             const bot = bots.find(b => b.id === currentBotId);
             if (bot) {
-                bot.code = editor.getValue(); // エディタから最新のコードを取得
+                bot.code = editor.getValue();
                 bot.token = tokenInput.value;
                 const transaction = db.transaction(["bots"], "readwrite");
                 transaction.objectStore("bots").put(bot);
@@ -208,7 +209,6 @@ if (eventType === 'MESSAGE') {
             }
         }
 
-        // --- タブUI制御 ---
         function renderTabs() {
             tabsContainer.innerHTML = '';
             bots.forEach(bot => {
@@ -240,7 +240,6 @@ if (eventType === 'MESSAGE') {
             currentBotId = id;
             const bot = bots.find(b => b.id === id);
             if (bot) {
-                // エディタの準備が完了していればコードをセット
                 if (isEditorReady) {
                     const currentVal = editor.getValue();
                     if (currentVal !== (bot.code || '')) {
@@ -256,10 +255,11 @@ if (eventType === 'MESSAGE') {
 
         tokenInput.addEventListener('input', saveCurrentBotToDB);
 
-        // --- ファイルマネージャー制御 ---
         function openFileManager() {
             document.getElementById('fileManagerModal').style.display = 'flex';
             document.getElementById('overlay').style.display = 'block';
+            selectedFileName = null;
+            updateToolbarButtons();
             refreshFileList();
         }
 
@@ -285,7 +285,11 @@ if (eventType === 'MESSAGE') {
                 };
                 const transaction = db.transaction(["images"], "readwrite");
                 transaction.objectStore("images").put(imageData);
-                transaction.oncomplete = () => refreshFileList();
+                transaction.oncomplete = () => {
+                    selectedFileName = null;
+                    updateToolbarButtons();
+                    refreshFileList();
+                };
             };
             reader.readAsDataURL(file);
         }
@@ -299,11 +303,19 @@ if (eventType === 'MESSAGE') {
                 if (cursor) {
                     const item = cursor.value;
                     const row = document.createElement('tr');
-                    row.className = "fm-row";
+                    row.className = "fm-row" + (item.name === selectedFileName ? " selected" : "");
+                    
+                    // クリックで行を選択・選択解除
                     row.onclick = () => {
-                        navigator.clipboard.writeText(item.data);
-                        alert("画像URLをコピーしました！");
+                        if (selectedFileName === item.name) {
+                            selectedFileName = null;
+                        } else {
+                            selectedFileName = item.name;
+                        }
+                        updateToolbarButtons();
+                        refreshFileList();
                     };
+
                     row.innerHTML = `
                         <td><img src="${item.data}" class="img-preview">${item.name}</td>
                         <td>${item.date}</td>
@@ -316,7 +328,132 @@ if (eventType === 'MESSAGE') {
             };
         }
 
-        // --- Bot 制御機能 ---
+        // --- ファイル操作のロジック群 ---
+
+        function updateToolbarButtons() {
+            const hasSelection = selectedFileName !== null;
+            document.getElementById('btnCut').disabled = !hasSelection;
+            document.getElementById('btnCopy').disabled = !hasSelection;
+            document.getElementById('btnDelete').disabled = !hasSelection;
+            document.getElementById('btnPaste').disabled = clipboardFile === null;
+        }
+
+        function cutSelectedFile() {
+            if (!selectedFileName) return;
+            const store = db.transaction(["images"], "readonly").objectStore("images");
+            const req = store.get(selectedFileName);
+            req.onsuccess = () => {
+                if (req.result) {
+                    // クリップボードに切り取りとして退避
+                    clipboardFile = { action: 'cut', data: req.result };
+                    
+                    // DBからは即座に消去する
+                    const delTx = db.transaction(["images"], "readwrite");
+                    delTx.objectStore("images").delete(selectedFileName);
+                    delTx.oncomplete = () => {
+                        selectedFileName = null;
+                        updateToolbarButtons();
+                        refreshFileList();
+                        alert(`「${clipboardFile.data.name}」を切り取りました。「貼り付け」で復元・移動できます。`);
+                    };
+                }
+            };
+        }
+
+        function copySelectedFile() {
+            if (!selectedFileName) return;
+            const store = db.transaction(["images"], "readonly").objectStore("images");
+            const req = store.get(selectedFileName);
+            req.onsuccess = () => {
+                if (req.result) {
+                    // クリップボードにコピーとして保持
+                    clipboardFile = { action: 'copy', data: req.result };
+                    updateToolbarButtons();
+                    alert(`「${clipboardFile.data.name}」をコピーしました。`);
+                }
+            };
+        }
+
+        async function pasteFile() {
+            if (!clipboardFile) return;
+
+            const baseData = clipboardFile.data;
+            const store = db.transaction(["images"], "readwrite").objectStore("images");
+
+            // 同名ファイルが存在する場合の名前変更処理（例: a.png -> a_コピー.png）
+            let targetName = baseData.name;
+            if (clipboardFile.action === 'copy') {
+                const extIndex = targetName.lastIndexOf('.');
+                const namePart = extIndex !== -1 ? targetName.substring(0, extIndex) : targetName;
+                const extPart = extIndex !== -1 ? targetName.substring(extIndex) : "";
+                
+                let counter = 1;
+                while (true) {
+                    targetName = `${namePart}_コピー${counter}${extPart}`;
+                    const existing = await new Promise(resolve => {
+                        const checkReq = db.transaction(["images"], "readonly").objectStore("images").get(targetName);
+                        checkReq.onsuccess = () => resolve(checkReq.result);
+                    });
+                    if (!existing) break;
+                    counter++;
+                }
+            }
+
+            const newData = {
+                ...baseData,
+                name: targetName,
+                date: new Date().toLocaleString()
+            };
+
+            const putTx = db.transaction(["images"], "readwrite");
+            putTx.objectStore("images").put(newData);
+            putTx.oncomplete = () => {
+                if (clipboardFile.action === 'cut') {
+                    clipboardFile = null; // 切り取りの場合はペースト完了でクリア
+                }
+                selectedFileName = targetName;
+                updateToolbarButtons();
+                refreshFileList();
+                alert(`「${targetName}」として貼り付けました。`);
+            };
+        }
+
+        function deleteSelectedFile() {
+            if (!selectedFileName) return;
+            if (confirm(`ファイル「${selectedFileName}」を削除してもよろしいですか？`)) {
+                const transaction = db.transaction(["images"], "readwrite");
+                transaction.objectStore("images").delete(selectedFileName);
+                transaction.oncomplete = () => {
+                    selectedFileName = null;
+                    updateToolbarButtons();
+                    refreshFileList();
+                };
+            }
+        }
+
+        // --- 画像パス解決ロジック（Bot起動用） ---
+        async function resolveImagePaths(code) {
+            const pattern = /image[\\\/]([^"'\s\)]+)/g;
+            const matches = code.match(pattern);
+            if (!matches) return code;
+
+            const images = await new Promise((resolve) => {
+                const store = db.transaction(["images"], "readonly").objectStore("images");
+                const req = store.getAll();
+                req.onsuccess = () => resolve(req.result);
+            });
+
+            let processedCode = code;
+            matches.forEach(match => {
+                const fileName = match.replace(/image[\\\/]/, "");
+                const imgEntry = images.find(i => i.name === fileName);
+                if (imgEntry) {
+                    processedCode = processedCode.split(match).join(imgEntry.data);
+                }
+            });
+            return processedCode;
+        }
+
         function updatePlayButton() {
             const isRunning = runningStatusMap[currentBotId] || false;
             btnOutput.textContent = isRunning ? '■' : '▶';
@@ -329,7 +466,6 @@ if (eventType === 'MESSAGE') {
                 try {
                     const response = await fetch('/api/logs');
                     const data = await response.json();
-                    
                     runningStatusMap = data.runningBots;
                     updatePlayButton();
 
@@ -360,6 +496,10 @@ if (eventType === 'MESSAGE') {
                     });
                 } else {
                     if (!token) { alert('トークンが必要です'); return; }
+                    
+                    // 起動直前に画像パスを解決したコードを生成して渡す
+                    const finalCode = await resolveImagePaths(editor.getValue());
+
                     const res = await fetch('/api/start-bot', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -367,22 +507,18 @@ if (eventType === 'MESSAGE') {
                             id: currentBotId,
                             name: bot.name,
                             token: token, 
-                            code: editor.getValue() // エディタからコードを取得
+                            code: finalCode 
                         })
                     });
                     
                     const text = await res.text();
                     try {
                         const result = JSON.parse(text);
-                        if (!result.success) {
-                            alert('起動エラー: ' + result.error);
-                        }
-                    } catch(e) {
-                        console.error("予期せぬレスポンス:", text);
-                    }
+                        if (!result.success) alert('起動エラー: ' + result.error);
+                    } catch(e) { console.error("予期せぬレスポンス:", text); }
                 }
             } catch (err) {
-                alert("サーバーとの通信に失敗しました。サーバーが起動しているか確認してください。");
+                alert("サーバーとの通信に失敗しました。");
             }
         }
 
