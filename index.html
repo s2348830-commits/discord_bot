@@ -385,7 +385,7 @@ if (eventType === 'MESSAGE') {
             });
             let processedCode = code;
             matches.forEach(match => {
-                const fileName = match.replace(/image[\\\/]/, "");
+                const fileName = match.replace(/^image[\\\/]+/, "");
                 const entry = images.find(i => i.name === fileName);
                 if (entry) processedCode = processedCode.split(match).join(entry.data);
             });
