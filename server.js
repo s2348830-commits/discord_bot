@@ -6,13 +6,22 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '10mb' })); 
+
+// 万が一、フロントからのJSON形式が壊れていた場合のエラーハンドリングを追加
+app.use((err, req, res, next) => {
+    if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+        return res.status(200).json({ success: false, error: 'リクエストデータが不正です' });
+    }
+    next();
+});
+
 app.use(express.static(path.join(__dirname))); 
 
-// Map構造で複数のBotを管理する「シェアハウス」化[cite: 2]
+// Map構造で複数のBotを管理する「シェアハウス」化
 const botConnections = new Map(); 
 let serverLogs = []; 
 
-// どのBotのログかが分かるように関数を改修[cite: 2]
+// どのBotのログかが分かるように関数を改修
 function addLog(botName, message) {
     const time = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).split(' ')[1];
     const logText = `[${time}] [${botName}] ${message}`;
@@ -24,7 +33,12 @@ function addLog(botName, message) {
 app.post('/api/start-bot', (req, res) => {
     // フロントからIDと名前も受け取る
     const { id, name, token, code } = req.body;
-    if (!id || !token) return res.status(400).send('ID and Token are required'); 
+    
+    // 修正箇所: 400エラーで落とさず、200 OKの中でエラー内容をフロントへ返す
+    if (!id || !token) {
+        addLog(name || 'Unknown', '起動失敗: IDまたはTokenが不足しています。');
+        return res.status(200).json({ success: false, error: 'IDとTokenが必要です' }); 
+    }
 
     // 既存のBotを全体切断するのではなく、該当IDのBotのみ上書き切断
     if (botConnections.has(id)) {
@@ -42,7 +56,8 @@ app.post('/api/start-bot', (req, res) => {
         userScriptFunc = new AsyncFunction('eventType', 'data', 'send', 'reply', code);
     } catch (e) {
         addLog(name, 'コードの文法エラー: ' + e.message);
-        return res.status(400).send('Syntax Error');
+        // 修正箇所: 400エラーで落とさず、200 OKの中でエラー内容をフロントへ返す
+        return res.status(200).json({ success: false, error: 'Syntax Error: ' + e.message });
     }
 
     // メッセージ送信関数
@@ -165,10 +180,11 @@ app.post('/api/start-bot', (req, res) => {
         if (botData) botData.isRunning = false;
     });
 
-    res.status(200).send('Bot Started');
+    // JSON形式で成功レスポンスを返すように修正
+    res.status(200).json({ success: true, message: 'Bot Started' });
 });
 
-// 特定のBotのみ停止する処理[cite: 2]
+// 特定のBotのみ停止する処理
 app.post('/api/stop-bot', (req, res) => {
     const { id } = req.body;
     if (botConnections.has(id)) {
@@ -178,7 +194,8 @@ app.post('/api/stop-bot', (req, res) => {
         addLog(botData.name, 'Botを手動停止しました。'); 
         botConnections.delete(id);
     }
-    res.status(200).send('Stopped');
+    // JSON形式で成功レスポンスを返すように修正
+    res.status(200).json({ success: true, message: 'Stopped' });
 });
 
 // 全Botの稼働状態をMap形式でフロントエンドへ返却する

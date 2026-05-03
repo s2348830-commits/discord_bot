@@ -100,7 +100,6 @@ if (eventType === 'MESSAGE') {
 }`;
 
         // --- IndexedDB 初期化 (画像＆Bot設定保存用) ---
-        // バージョンを2に上げてbotsストアを追加[cite: 1]
         const request = indexedDB.open("BotMakerFiles", 2);
         request.onupgradeneeded = (e) => {
             db = e.target.result;
@@ -217,7 +216,7 @@ if (eventType === 'MESSAGE') {
         codeEditor.addEventListener('input', saveCurrentBotToDB);
         tokenInput.addEventListener('input', saveCurrentBotToDB);
 
-        // --- ファイルマネージャー制御 (既存機能維持) ---[cite: 1]
+        // --- ファイルマネージャー制御 ---
         function openFileManager() {
             document.getElementById('fileManagerModal').style.display = 'flex';
             document.getElementById('overlay').style.display = 'block';
@@ -314,26 +313,41 @@ if (eventType === 'MESSAGE') {
             const token = tokenInput.value.trim();
             const isRunning = runningStatusMap[currentBotId] || false;
 
-            if (isRunning) {
-                // 特定のBotだけを停止するリクエスト[cite: 1]
-                await fetch('/api/stop-bot', { 
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: currentBotId })
-                });
-            } else {
-                if (!token) { alert('トークンが必要です'); return; }
-                // 固有IDと名前を付与して起動リクエスト
-                await fetch('/api/start-bot', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        id: currentBotId,
-                        name: bot.name,
-                        token: token, 
-                        code: codeEditor.value 
-                    })
-                });
+            try {
+                if (isRunning) {
+                    // 特定のBotだけを停止するリクエスト
+                    await fetch('/api/stop-bot', { 
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ id: currentBotId })
+                    });
+                } else {
+                    if (!token) { alert('トークンが必要です'); return; }
+                    // 固有IDと名前を付与して起動リクエスト
+                    const res = await fetch('/api/start-bot', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            id: currentBotId,
+                            name: bot.name,
+                            token: token, 
+                            code: codeEditor.value 
+                        })
+                    });
+                    
+                    // 修正箇所: サーバーからのレスポンスを検証し、エラーがあれば通知
+                    const text = await res.text();
+                    try {
+                        const result = JSON.parse(text);
+                        if (!result.success) {
+                            alert('起動エラー: ' + result.error);
+                        }
+                    } catch(e) {
+                        console.error("予期せぬレスポンス:", text);
+                    }
+                }
+            } catch (err) {
+                alert("サーバーとの通信に失敗しました。サーバーが起動しているか確認してください。");
             }
         }
 
