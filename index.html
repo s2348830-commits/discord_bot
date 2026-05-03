@@ -16,13 +16,13 @@
         <button class="btn-link" onclick="window.open('https://discord.com/developers/applications', '_blank')">🤖Botリンク</button>
     </header>
 
-    <!-- タブエリアの追加 -->
-    <div id="tabsContainer" class="tabs-container">
-        <!-- タブがここに動的に生成されます -->
-    </div>
+    <!-- タブエリア -->
+    <div id="tabsContainer" class="tabs-container"></div>
 
-    <main>
-        <textarea id="codeEditor" spellcheck="false" placeholder="ここにJavaScriptコードを入力..."></textarea>
+    <!-- mainのpaddingをなくし、エディタを画面いっぱいに広げます -->
+    <main style="padding: 0; display: flex; flex-direction: column;">
+        <!-- textareaの代わりにMonaco Editorをマウントする場所 -->
+        <div id="editorContainer" style="flex: 1; width: 100%; min-height: 400px; text-align: left;"></div>
     </main>
 
     <footer>
@@ -66,8 +66,10 @@
         </div>
     </div>
 
+    <!-- ▼ VS Codeのエンジン「Monaco Editor」を読み込む ▼ -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
+
     <script>
-        const codeEditor = document.getElementById('codeEditor');
         const tokenInput = document.getElementById('tokenInput');
         const logArea = document.getElementById('logArea');
         const btnOutput = document.getElementById('btnOutput');
@@ -99,7 +101,40 @@ if (eventType === 'MESSAGE') {
     }
 }`;
 
-        // --- IndexedDB 初期化 (画像＆Bot設定保存用) ---
+        // --- Monaco Editor の初期化 ---
+        let editor; // エディタ本体を格納する変数
+        let isEditorReady = false;
+
+        require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' }});
+        require(['vs/editor/editor.main'], function() {
+            editor = monaco.editor.create(document.getElementById('editorContainer'), {
+                value: '',
+                language: 'javascript',
+                theme: 'vs-dark', // VS Codeのダークテーマを指定！
+                automaticLayout: true, // 画面サイズ変更に自動で合わせる
+                minimap: { enabled: false }, // 画面を広く使うため右側のミニマップは一旦オフ
+                fontSize: 14,
+                wordWrap: 'on', // 右端で折り返す
+                scrollBeyondLastLine: false
+            });
+
+            // エディタの文字が変更されたら自動保存
+            editor.onDidChangeModelContent(() => {
+                saveCurrentBotToDB();
+            });
+
+            isEditorReady = true;
+
+            // データベースの読み込みがエディタより先に終わっていた場合、ここでコードをセット
+            if (currentBotId && bots.length > 0) {
+                const bot = bots.find(b => b.id === currentBotId);
+                if (bot && editor.getValue() !== bot.code) {
+                    editor.setValue(bot.code || '');
+                }
+            }
+        });
+
+        // --- IndexedDB 初期化 ---
         const request = indexedDB.open("BotMakerFiles", 2);
         request.onupgradeneeded = (e) => {
             db = e.target.result;
@@ -122,7 +157,7 @@ if (eventType === 'MESSAGE') {
             req.onsuccess = () => {
                 bots = req.result;
                 if (bots.length === 0) {
-                    addNewBot(); // 初期Botの作成
+                    addNewBot();
                 } else {
                     renderTabs();
                     switchTab(bots[0].id);
@@ -131,10 +166,11 @@ if (eventType === 'MESSAGE') {
         }
 
         function saveCurrentBotToDB() {
-            if (!currentBotId) return;
+            // エディタの準備がまだなら保存しない
+            if (!currentBotId || !isEditorReady) return;
             const bot = bots.find(b => b.id === currentBotId);
             if (bot) {
-                bot.code = codeEditor.value;
+                bot.code = editor.getValue(); // エディタから最新のコードを取得
                 bot.token = tokenInput.value;
                 const transaction = db.transaction(["bots"], "readwrite");
                 transaction.objectStore("bots").put(bot);
@@ -204,7 +240,13 @@ if (eventType === 'MESSAGE') {
             currentBotId = id;
             const bot = bots.find(b => b.id === id);
             if (bot) {
-                codeEditor.value = bot.code || '';
+                // エディタの準備が完了していればコードをセット
+                if (isEditorReady) {
+                    const currentVal = editor.getValue();
+                    if (currentVal !== (bot.code || '')) {
+                        editor.setValue(bot.code || '');
+                    }
+                }
                 tokenInput.value = bot.token || '';
                 tokenLabel.textContent = bot.name + " TOKEN";
             }
@@ -212,8 +254,6 @@ if (eventType === 'MESSAGE') {
             updatePlayButton();
         }
 
-        // 入力時に自動保存
-        codeEditor.addEventListener('input', saveCurrentBotToDB);
         tokenInput.addEventListener('input', saveCurrentBotToDB);
 
         // --- ファイルマネージャー制御 ---
@@ -290,11 +330,9 @@ if (eventType === 'MESSAGE') {
                     const response = await fetch('/api/logs');
                     const data = await response.json();
                     
-                    // 個別Botの稼働状態を更新
                     runningStatusMap = data.runningBots;
                     updatePlayButton();
 
-                    // ログエリアの更新
                     logArea.innerHTML = '';
                     data.logs.forEach(log => {
                         const div = document.createElement('div');
@@ -308,14 +346,13 @@ if (eventType === 'MESSAGE') {
         startLogPolling();
 
         async function toggleBot() {
-            if (!currentBotId) return;
+            if (!currentBotId || !isEditorReady) return;
             const bot = bots.find(b => b.id === currentBotId);
             const token = tokenInput.value.trim();
             const isRunning = runningStatusMap[currentBotId] || false;
 
             try {
                 if (isRunning) {
-                    // 特定のBotだけを停止するリクエスト
                     await fetch('/api/stop-bot', { 
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -323,7 +360,6 @@ if (eventType === 'MESSAGE') {
                     });
                 } else {
                     if (!token) { alert('トークンが必要です'); return; }
-                    // 固有IDと名前を付与して起動リクエスト
                     const res = await fetch('/api/start-bot', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -331,11 +367,10 @@ if (eventType === 'MESSAGE') {
                             id: currentBotId,
                             name: bot.name,
                             token: token, 
-                            code: codeEditor.value 
+                            code: editor.getValue() // エディタからコードを取得
                         })
                     });
                     
-                    // 修正箇所: サーバーからのレスポンスを検証し、エラーがあれば通知
                     const text = await res.text();
                     try {
                         const result = JSON.parse(text);
@@ -355,13 +390,16 @@ if (eventType === 'MESSAGE') {
         function handleFileImport(e) {
             const reader = new FileReader();
             reader.onload = (ev) => { 
-                codeEditor.value = ev.target.result; 
-                saveCurrentBotToDB();
+                if (isEditorReady) {
+                    editor.setValue(ev.target.result); 
+                    saveCurrentBotToDB();
+                }
             };
             reader.readAsText(e.target.files[0]);
         }
         function exportCode() {
-            const blob = new Blob([codeEditor.value], { type: 'text/javascript' });
+            if (!isEditorReady) return;
+            const blob = new Blob([editor.getValue()], { type: 'text/javascript' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob); a.download = 'bot_code.js';
             a.click();
