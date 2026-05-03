@@ -3,38 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>スマホ向け Discord Bot Maker (リモコン版)</title>
+    <title>Discord Bot Maker</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
     <header>
         <button id="btnOutput" class="btn-start" onclick="toggleBot()">▶</button>
-        <button onclick="importCode()">インポート</button>
-        <button onclick="exportCode()">エクスポート</button>
-        <button class="btn-link" onclick="window.open('https://discord.com/developers/applications', '_blank')">Botリンク</button>
+        <button onclick="importCode()">📥インポート</button>
+        <button onclick="exportCode()">📥エクスポート</button>
+        <button onclick="openFileManager()">📁ファイル</button>
+        <button class="btn-link" onclick="window.open('https://discord.com/developers/applications', '_blank')">🤖Botリンク</button>
     </header>
 
     <main>
         <textarea id="codeEditor" spellcheck="false" placeholder="ここにJavaScriptコードを入力...">
-// msg: 受信したメッセージのデータ
-// send(channel_id, content): メッセージを送信する関数
+// eventType: 'MESSAGE' または 'INTERACTION'
+// send(channel_id, content, components, embeds): メッセージ送信
 
-// Bot自身のメッセージには反応しない
-if (msg.author.bot) return;
+if (eventType === 'MESSAGE') {
+    if (data.author.bot) return;
 
-// 「おみくじ」と送信されたときの処理
-if (msg.content === 'おみくじ') {
-    const fortunes = ["オグリ吉", "大吉", "中吉", "小吉", "凶", "大凶"];
-    const randomIndex = Math.floor(Math.random() * fortunes.length);
-    const result = fortunes[randomIndex];
-    
-    send(msg.channel_id, `${msg.author.username} さんの運勢は……「${result}」です！`);
-}
-
-// テスト用のPing-Pong
-if (msg.content === '!ping') {
-    send(msg.channel_id, 'Pong!');
+    if (data.content === '画像テスト') {
+        // ファイルマネージャーでコピーしたURLをここに貼り付け
+        const embeds = [{
+            title: "保存済み画像",
+            image: { url: "ここにデータURLを貼り付け" }
+        }];
+        send(data.channel_id, "画像を表示します", null, embeds);
+    }
 }
 </textarea>
     </main>
@@ -47,7 +44,38 @@ if (msg.content === '!ping') {
         </div>
     </footer>
 
+    <!-- 隠しインプット -->
     <input type="file" id="fileInput" accept=".js,.txt" onchange="handleFileImport(event)">
+    <input type="file" id="imageUploadInput" accept="image/*" onchange="processImageUpload(event)" style="display:none">
+
+    <!-- ファイルマネージャーモーダル -->
+    <div id="overlay" class="overlay" onclick="closeFileManager()"></div>
+    <div id="fileManagerModal">
+        <div class="fm-title-bar">
+            <span>📁 image</span>
+            <button onclick="closeFileManager()" style="background:none; border:none; cursor:pointer;">✕</button>
+        </div>
+        <div class="fm-toolbar">
+            <button class="fm-btn fm-btn-primary" onclick="triggerImageUpload()">＋ 新規作成</button>
+            <div style="height:20px; width:1px; background:#ddd;"></div>
+            <button class="fm-btn">✂ 切り取り</button>
+            <button class="fm-btn">📋 コピー</button>
+            <button class="fm-btn">🗑 削除</button>
+        </div>
+        <div class="fm-content">
+            <table class="fm-table">
+                <thead>
+                    <tr>
+                        <th style="width: 40%;">名前</th>
+                        <th>更新日時</th>
+                        <th>種類</th>
+                        <th>サイズ</th>
+                    </tr>
+                </thead>
+                <tbody id="fileListBody"></tbody>
+            </table>
+        </div>
+    </div>
 
     <script>
         const codeEditor = document.getElementById('codeEditor');
@@ -55,105 +83,129 @@ if (msg.content === '!ping') {
         const logArea = document.getElementById('logArea');
         const btnOutput = document.getElementById('btnOutput');
         const fileInput = document.getElementById('fileInput');
-
+        const imgInput = document.getElementById('imageUploadInput');
+        
         let isRunning = false;
         let logPollingInterval = null;
+        let db;
 
-        // 🔄 2秒ごとにRenderサーバーから「稼働状態」と「ログ」をもらってくる関数
+        // --- IndexedDB 初期化 (画像永続化用) ---
+        const request = indexedDB.open("BotMakerFiles", 1);
+        request.onupgradeneeded = (e) => {
+            db = e.target.result;
+            db.createObjectStore("images", { keyPath: "name" });
+        };
+        request.onsuccess = (e) => { db = e.target.result; };
+
+        // --- ファイルマネージャー制御 ---
+        function openFileManager() {
+            document.getElementById('fileManagerModal').style.display = 'flex';
+            document.getElementById('overlay').style.display = 'block';
+            refreshFileList();
+        }
+
+        function closeFileManager() {
+            document.getElementById('fileManagerModal').style.display = 'none';
+            document.getElementById('overlay').style.display = 'none';
+        }
+
+        function triggerImageUpload() { imgInput.click(); }
+
+        async function processImageUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const imageData = {
+                    name: file.name,
+                    data: e.target.result,
+                    date: new Date().toLocaleString(),
+                    type: file.type,
+                    size: (file.size / 1024).toFixed(1) + " KB"
+                };
+                const transaction = db.transaction(["images"], "readwrite");
+                transaction.objectStore("images").put(imageData);
+                transaction.oncomplete = () => refreshFileList();
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function refreshFileList() {
+            const tbody = document.getElementById('fileListBody');
+            tbody.innerHTML = "";
+            const store = db.transaction(["images"], "readonly").objectStore("images");
+            store.openCursor().onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor) {
+                    const item = cursor.value;
+                    const row = document.createElement('tr');
+                    row.className = "fm-row";
+                    row.onclick = () => {
+                        navigator.clipboard.writeText(item.data);
+                        alert("画像URLをコピーしました！");
+                    };
+                    row.innerHTML = `
+                        <td><img src="${item.data}" class="img-preview">${item.name}</td>
+                        <td>${item.date}</td>
+                        <td>${item.type.split('/')[1]} ファイル</td>
+                        <td>${item.size}</td>
+                    `;
+                    tbody.appendChild(row);
+                    cursor.continue();
+                }
+            };
+        }
+
+        // --- Bot 制御機能 ---
         function startLogPolling() {
             if (logPollingInterval) return;
             logPollingInterval = setInterval(async () => {
                 try {
                     const response = await fetch('/api/logs');
                     const data = await response.json();
-                    
-                    // UIのボタン状態をサーバーと同期する
                     if (data.isRunning !== isRunning) {
                         isRunning = data.isRunning;
-                        if (isRunning) {
-                            btnOutput.textContent = '■';
-                            btnOutput.className = 'btn-stop';
-                        } else {
-                            btnOutput.textContent = '▶';
-                            btnOutput.className = 'btn-start';
-                        }
+                        btnOutput.textContent = isRunning ? '■' : '▶';
+                        btnOutput.className = isRunning ? 'btn-stop' : 'btn-start';
                     }
-
-                    // ログを画面に描画
                     logArea.innerHTML = '';
-                    if (data.logs.length === 0 && !isRunning) {
-                        logArea.innerHTML = '<div>待機中... トークンを入力して▶を押してください。</div>';
-                    } else {
-                        data.logs.forEach(logText => {
-                            const div = document.createElement('div');
-                            div.textContent = logText;
-                            logArea.appendChild(div);
-                        });
-                        // 一番下まで自動スクロール
-                        logArea.scrollTop = logArea.scrollHeight;
-                    }
-                } catch (e) {
-                    // 読み込み中のエラーは無視
-                }
+                    data.logs.forEach(log => {
+                        const div = document.createElement('div');
+                        div.textContent = log;
+                        logArea.appendChild(div);
+                    });
+                    logArea.scrollTop = logArea.scrollHeight;
+                } catch (e) {}
             }, 2000); 
         }
-
-        // ページを開いた瞬間に監視スタート
         startLogPolling();
 
-        // 📂 ファイル機能（従来通り）
-        function importCode() { fileInput.click(); }
-
-        function handleFileImport(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                codeEditor.value = e.target.result;
-            };
-            reader.readAsText(file);
-            fileInput.value = '';
-        }
-
-        function exportCode() {
-            const code = codeEditor.value;
-            const blob = new Blob([code], { type: 'text/javascript' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'bot_code.js';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        }
-
-        // 🚀 起動・停止機能（Renderサーバーへ指示を出す）
         async function toggleBot() {
+            const token = tokenInput.value.trim();
             if (isRunning) {
-                // 停止指示を出す
                 await fetch('/api/stop-bot', { method: 'POST' });
             } else {
-                const token = tokenInput.value.trim();
-                const userCode = codeEditor.value;
-
-                if (!token) {
-                    alert('右下にトークンを入力してください！');
-                    return;
-                }
-                
-                // 起動指示と一緒にコードとトークンを送信する
+                if (!token) { alert('トークンが必要です'); return; }
                 await fetch('/api/start-bot', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token: token, code: userCode })
+                    body: JSON.stringify({ token: token, code: codeEditor.value })
                 });
-                
-                // 先行してボタンを赤色に変えておく（ログ取得で最終確定する）
-                btnOutput.textContent = '■';
-                btnOutput.className = 'btn-stop';
-                isRunning = true;
             }
+        }
+
+        function importCode() { fileInput.click(); }
+        function handleFileImport(e) {
+            const reader = new FileReader();
+            reader.onload = (ev) => { codeEditor.value = ev.target.result; };
+            reader.readAsText(e.target.files[0]);
+        }
+        function exportCode() {
+            const blob = new Blob([codeEditor.value], { type: 'text/javascript' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob); a.download = 'bot_code.js';
+            a.click();
         }
     </script>
 </body>
