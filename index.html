@@ -29,7 +29,10 @@
         <button class="btn-link"
             onclick="window.open('https://discord.com/developers/applications', '_blank')">🤖Botリンク</button>
         <button onclick="clearCode()" class="btn-danger">🗑コード全消去</button>
-        <button onclick="copyCode()" class="btn-copy">📋コードコピー</button>
+        <button onclick="copyCode()" class="btn-copy">📋コピー</button>
+        <button onclick="pasteCode()" class="btn-paste">📋貼付</button>
+        <button onclick="undoCode()" class="btn-history">↩戻る</button>
+        <button onclick="redoCode()" class="btn-history">↪進む</button>
     </header>
 
     <div id="tabsContainer" class="tabs-container"></div>
@@ -154,10 +157,13 @@ if (eventType === 'MESSAGE') {
                 language: 'javascript',
                 theme: 'vs-dark',
                 automaticLayout: true,
-                minimap: { enabled: false },
+                minimap: { enabled: true }, // ミニマップを有効化して移動しやすく
                 fontSize: 14,
                 wordWrap: 'on',
-                scrollBeyondLastLine: false
+                scrollBeyondLastLine: true, // コードの最下部を越えて自由にスクロール可能に修正
+                autoIndent: 'full',
+                formatOnPaste: true,
+                formatOnType: true
             });
             editor.onDidChangeModelContent(() => saveCurrentBotToDB());
             isEditorReady = true;
@@ -248,7 +254,11 @@ if (eventType === 'MESSAGE') {
             if (bot) {
                 if (isEditorReady) {
                     const currentVal = editor.getValue();
-                    if (currentVal !== (bot.code || '')) editor.setValue(bot.code || '');
+                    if (currentVal !== (bot.code || '')) {
+                        editor.setValue(bot.code || '');
+                        // タブ切り替え時は履歴をクリアして、戻るボタンで前のBotのコードにならないようにする
+                        editor.getModel().clearUndoRedoElements();
+                    }
                 }
                 tokenInput.value = bot.token || '';
                 tokenLabel.textContent = bot.name + " TOKEN";
@@ -258,7 +268,7 @@ if (eventType === 'MESSAGE') {
 
         tokenInput.addEventListener('input', saveCurrentBotToDB);
 
-        // --- コード操作機能 ---
+        // --- コード操作機能（追加・修正） ---
         function clearCode() {
             if (isEditorReady && confirm("本当にコードを全て消去しますか？\n※この操作は元に戻せません。")) {
                 editor.setValue('');
@@ -271,6 +281,37 @@ if (eventType === 'MESSAGE') {
                 navigator.clipboard.writeText(editor.getValue())
                     .then(() => alert("コードをクリップボードにコピーしました。"))
                     .catch(err => alert("コピーに失敗しました: " + err));
+            }
+        }
+
+        async function pasteCode() {
+            if (!isEditorReady) return;
+            try {
+                const text = await navigator.clipboard.readText();
+                if (text) {
+                    editor.focus();
+                    const selection = editor.getSelection();
+                    const op = { range: selection, text: text, forceMoveMarkers: true };
+                    // 履歴に残るように edits を実行
+                    editor.executeEdits("paste-handler", [op]);
+                    editor.pushUndoStop(); // これにより「戻る」ボタンが効くようになります
+                }
+            } catch (err) {
+                alert("貼り付けに失敗しました。ブラウザのクリップボードのアクセス許可を確認してください。");
+            }
+        }
+
+        function undoCode() {
+            if (isEditorReady) {
+                editor.trigger('keyboard', 'undo', null);
+                editor.focus();
+            }
+        }
+
+        function redoCode() {
+            if (isEditorReady) {
+                editor.trigger('keyboard', 'redo', null);
+                editor.focus();
             }
         }
 
@@ -469,10 +510,7 @@ if (eventType === 'MESSAGE') {
             for (const match of matches) {
                 const fileName = match.replace(/^image[\\\/]+/, "");
                 const entry = images.find(i => i.name === fileName);
-
-                if (entry) {
-                    processedCode = processedCode.split(match).join(entry.data);
-                }
+                if (entry) processedCode = processedCode.split(match).join(entry.data);
             }
             return processedCode;
         }
@@ -491,11 +529,10 @@ if (eventType === 'MESSAGE') {
                 updatePlayButton();
                 logArea.innerHTML = '';
                 
-                // 現在選択中のBotIDに対応するログのみを表示
                 const currentLogs = data.logs[currentBotId] || [];
                 currentLogs.forEach(log => {
                     const div = document.createElement('div');
-                    div.style.whiteSpace = "pre-wrap"; // エラーの改行などを維持
+                    div.style.whiteSpace = "pre-wrap";
                     div.textContent = log; 
                     logArea.appendChild(div);
                 });
