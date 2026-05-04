@@ -5,7 +5,6 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 
-// 画像データを含むため、制限を緩和（10MBまで）
 app.use(express.json({ limit: '10mb' }));
 
 app.use((err, req, res, next) => {
@@ -18,13 +17,19 @@ app.use((err, req, res, next) => {
 app.use(express.static(path.join(__dirname)));
 
 const botConnections = new Map();
-let serverLogs = [];
+// ログをBotIDごとに管理するMapに変更
+const botLogs = new Map();
 
-function addLog(botName, message) {
+function addLog(botId, botName, message) {
     const time = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).split(' ')[1];
     const logText = `[${time}] [${botName}] ${message}`;
-    serverLogs.push(logText);
-    if (serverLogs.length > 200) serverLogs.shift();
+    
+    if (!botLogs.has(botId)) botLogs.set(botId, []);
+    const logs = botLogs.get(botId);
+    
+    logs.push(logText);
+    if (logs.length > 200) logs.shift(); // 最大200行
+    
     console.log(logText);
 }
 
@@ -38,7 +43,6 @@ async function sendDiscordMessage(botToken, channelId, content, components, embe
     if (content) payload.content = content;
     if (components) payload.components = components;
 
-    // 画像処理: Embeds内のBase64をファイル添付に変換
     const files = [];
     if (embeds && embeds.length > 0) {
         embeds.forEach((embed, index) => {
@@ -48,13 +52,10 @@ async function sendDiscordMessage(botToken, channelId, content, components, embe
                 const extension = mimeType.split('/')[1] || 'png';
                 const fileName = `upload_${index}.${extension}`;
 
-                // バイナリに変換
                 const buffer = Buffer.from(base64Data, 'base64');
                 const blob = new Blob([buffer], { type: mimeType });
 
                 formData.append(`files[${index}]`, blob, fileName);
-                
-                // EmbedのURLを添付ファイル参照に書き換え
                 embed.image.url = `attachment://${fileName}`;
             }
         });
@@ -70,7 +71,7 @@ async function sendDiscordMessage(botToken, channelId, content, components, embe
 
     if (interactionInfo) {
         url = `https://discord.com/api/v10/interactions/${interactionInfo.id}/${interactionInfo.token}/callback`;
-        headers = {}; // インタラクション応答にAuthヘッダーは不要
+        headers = {}; 
     }
 
     return await fetch(url, {
@@ -80,66 +81,57 @@ async function sendDiscordMessage(botToken, channelId, content, components, embe
     });
 }
 
-app.post('/api/start-bot', (req, res) => {
-    const { id, name, token, code } = req.body;
-
-    if (!id || !token) {
-        addLog(name || 'Unknown', '起動失敗: IDまたはTokenが不足しています。');
-        return res.status(200).json({ success: false, error: 'IDとTokenが必要です' });
-    }
-
+// Bot接続処理を関数化（自動再接続のため）
+function connectDiscordBot(id, name, token, code) {
     if (botConnections.has(id)) {
         const existing = botConnections.get(id);
         if (existing.ws) existing.ws.close();
         clearInterval(existing.heartbeatInterval);
-        botConnections.delete(id);
     }
 
-    addLog(name, 'Discord Gatewayへ接続中...');
+    addLog(id, name, 'Discord Gatewayへ接続中...');
 
     const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
     let userScriptFunc;
     try {
         userScriptFunc = new AsyncFunction('eventType', 'data', 'send', 'reply', code);
     } catch (e) {
-        addLog(name, 'コードの文法エラー: ' + e.message);
-        return res.status(200).json({ success: false, error: 'Syntax Error: ' + e.message });
+        addLog(id, name, `コードの文法エラー:\n${e.message}\n${e.stack}`);
+        return { success: false, error: 'Syntax Error: ' + e.message };
     }
 
-    // メッセージ送信（ファイル添付対応）
     const sendMessage = async (channelId, content, components = null, embeds = null) => {
         try {
             const response = await sendDiscordMessage(token, channelId, content, components, embeds);
             if (!response.ok) {
                 const errText = await response.text();
-                addLog(name, `送信エラー: ${response.status} ${errText}`);
+                addLog(id, name, `[Error] 送信失敗 (Status: ${response.status}):\n${errText}`);
             } else {
-                addLog(name, `メッセージ(画像含む)を送信しました`);
+                addLog(id, name, `メッセージを送信しました`);
             }
         } catch (e) {
-            addLog(name, '通信エラー: ' + e.message);
+            addLog(id, name, `[Error] 通信エラー:\n${e.message}\n${e.stack}`);
         }
     };
 
-    // ボタン応答（ファイル添付対応）
     const replyInteraction = async (interactionId, interactionToken, content, components = null, embeds = null) => {
         try {
             const response = await sendDiscordMessage(null, null, content, components, embeds, { id: interactionId, token: interactionToken });
             if (!response.ok) {
                 const errText = await response.text();
-                addLog(name, `ボタン応答エラー: ${response.status} ${errText}`);
+                addLog(id, name, `[Error] ボタン応答失敗 (Status: ${response.status}):\n${errText}`);
             } else {
-                addLog(name, `ボタンの応答完了(画像含む)`);
+                addLog(id, name, `ボタンの応答完了`);
             }
         } catch (e) {
-            addLog(name, 'インタラクションエラー: ' + e.message);
+            addLog(id, name, `[Error] インタラクション通信エラー:\n${e.message}\n${e.stack}`);
         }
     };
 
     const botWS = new WebSocket('wss://gateway.discord.gg/?v=10&encoding=json');
     let sequence = null;
 
-    botConnections.set(id, { ws: botWS, heartbeatInterval: null, isRunning: false, name: name });
+    botConnections.set(id, { ws: botWS, heartbeatInterval: null, isRunning: false, name: name, intentionalStop: false });
 
     botWS.on('message', async (messageData) => {
         const payload = JSON.parse(messageData);
@@ -159,25 +151,54 @@ app.post('/api/start-bot', (req, res) => {
 
         if (op === 0) {
             if (t === 'READY') {
-                addLog(name, `成功: [${d.user.username}] として稼働開始✨`);
+                addLog(id, name, `成功: [${d.user.username}] として稼働開始✨`);
                 botConnections.get(id).isRunning = true;
             }
             if (t === 'MESSAGE_CREATE') {
                 try { await userScriptFunc('MESSAGE', d, sendMessage, replyInteraction); }
-                catch (err) { addLog(name, '実行エラー: ' + err.message); }
+                catch (err) { addLog(id, name, `[Runtime Error] 実行エラー:\n${err.message}\n${err.stack || ''}`); }
             }
             if (t === 'INTERACTION_CREATE') {
                 try { await userScriptFunc('INTERACTION', d, sendMessage, replyInteraction); }
-                catch (err) { addLog(name, '実行エラー: ' + err.message); }
+                catch (err) { addLog(id, name, `[Runtime Error] 実行エラー:\n${err.message}\n${err.stack || ''}`); }
             }
         }
     });
 
-    botWS.on('close', () => {
+    botWS.on('close', (codeReason) => {
         const botData = botConnections.get(id);
-        if (botData) botData.isRunning = false;
-        addLog(name, '切断されました。');
+        if (botData) {
+            botData.isRunning = false;
+            clearInterval(botData.heartbeatInterval);
+            addLog(id, name, `切断されました。(Code: ${codeReason})`);
+            
+            // 意図的な停止でない場合、cron-job対策として自動再接続を試みる
+            if (!botData.intentionalStop) {
+                addLog(id, name, '⚠️意図しない切断を検知しました。5秒後に自動再接続を試みます...');
+                setTimeout(() => {
+                    // 再度意図的停止がされていなければ再接続
+                    if (botConnections.has(id) && !botConnections.get(id).intentionalStop) {
+                        connectDiscordBot(id, name, token, code);
+                    }
+                }, 5000);
+            }
+        }
     });
+
+    return { success: true };
+}
+
+app.post('/api/start-bot', (req, res) => {
+    const { id, name, token, code } = req.body;
+
+    if (!id || !token) {
+        return res.status(200).json({ success: false, error: 'IDとTokenが必要です' });
+    }
+
+    const result = connectDiscordBot(id, name, token, code);
+    if (!result.success) {
+        return res.status(200).json(result);
+    }
 
     res.status(200).json({ success: true, message: 'Bot Started' });
 });
@@ -186,10 +207,10 @@ app.post('/api/stop-bot', (req, res) => {
     const { id } = req.body;
     if (botConnections.has(id)) {
         const botData = botConnections.get(id);
+        botData.intentionalStop = true; // 意図的停止フラグをオン
         if (botData.ws) botData.ws.close();
         clearInterval(botData.heartbeatInterval);
-        addLog(botData.name, '停止しました。');
-        botConnections.delete(id);
+        addLog(id, botData.name, '⏹ 正常に停止しました。');
     }
     res.json({ success: true });
 });
@@ -199,7 +220,12 @@ app.get('/api/logs', (req, res) => {
     for (const [id, botData] of botConnections.entries()) {
         runningBots[id] = botData.isRunning;
     }
-    res.json({ runningBots, logs: serverLogs });
+    // botLogs(Map)をオブジェクトに変換して返す
+    const logsObj = {};
+    for (const [id, logs] of botLogs.entries()) {
+        logsObj[id] = logs;
+    }
+    res.json({ runningBots, logs: logsObj });
 });
 
 app.get('/ping', (req, res) => res.send('pong'));

@@ -8,6 +8,7 @@ body {
     background-color: #1e1e1e;
     color: #ffffff;
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    overflow: hidden;
 }
 
 /* ヘッダー */
@@ -39,8 +40,12 @@ button:active { background-color: #4752c4; }
 .btn-start { background-color: #4CAF50; font-size: 16px; padding: 8px 20px; }
 .btn-stop { background-color: #f44336; font-size: 16px; padding: 8px 20px; }
 .btn-link { background-color: #4f545c; }
+.btn-danger { background-color: #da373c; }
+.btn-danger:hover { background-color: #a1282c; }
+.btn-copy { background-color: #4f545c; }
+.btn-copy:hover { background-color: #686d73; }
 
-/* タブエリア (新規追加) */
+/* タブエリア */
 .tabs-container {
     display: flex;
     background-color: #1e1f22;
@@ -93,41 +98,52 @@ main {
     display: flex;
     flex-direction: column;
     padding: 10px;
+    overflow: hidden;
 }
 
-textarea {
-    flex: 1;
-    width: 100%;
-    background-color: #1e1e1e;
-    color: #d4d4d4;
-    border: 1px solid #444;
-    border-radius: 4px;
-    padding: 10px;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 14px;
-    resize: none;
-    box-sizing: border-box;
-    outline: none;
+/* リサイザー */
+.resizer {
+    height: 8px;
+    background-color: #1e1f22;
+    cursor: ns-resize;
+    position: relative;
+    z-index: 5;
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    border-top: 1px solid #111214;
+    border-bottom: 1px solid #111214;
+    transition: background-color 0.2s;
 }
 
-textarea:focus { border-color: #5865F2; }
+.resizer:hover, .resizer:active {
+    background-color: #5865F2;
+}
+
+.resizer-grip {
+    color: #a3a6aa;
+    font-size: 16px;
+    line-height: 1;
+    padding-left: 15px;
+    user-select: none;
+    pointer-events: none;
+}
 
 /* フッター・ログエリア */
 footer {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: stretch;
     padding: 10px;
     background-color: #2b2d31;
-    height: 110px;
+    height: 150px; /* デフォルト高さを少し拡大 */
+    min-height: 50px;
     box-sizing: border-box;
     gap: 10px;
-    border-top: 1px solid #1e1f22;
 }
 
 #logArea {
     flex: 1;
-    height: 100%;
     background-color: #111214;
     border-radius: 6px;
     padding: 8px;
@@ -149,6 +165,7 @@ footer {
     padding: 8px 12px;
     border-radius: 6px;
     border: 1px solid #3a3c40;
+    min-width: 220px;
 }
 
 .token-area label {
@@ -199,6 +216,7 @@ footer {
     align-items: center;
     font-size: 13px;
     border-bottom: 1px solid #e5e5e5;
+    flex-wrap: wrap;
 }
 
 .fm-btn {

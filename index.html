@@ -28,15 +28,22 @@
         <button onclick="openFileManager()">📁ファイル</button>
         <button class="btn-link"
             onclick="window.open('https://discord.com/developers/applications', '_blank')">🤖Botリンク</button>
+        <button onclick="clearCode()" class="btn-danger">🗑コード全消去</button>
+        <button onclick="copyCode()" class="btn-copy">📋コードコピー</button>
     </header>
 
     <div id="tabsContainer" class="tabs-container"></div>
 
     <main style="padding: 0; display: flex; flex-direction: column;">
-        <div id="editorContainer" style="flex: 1; width: 100%; min-height: 400px; text-align: left;"></div>
+        <div id="editorContainer" style="flex: 1; width: 100%; min-height: 200px; text-align: left;"></div>
     </main>
 
-    <footer>
+    <!-- 上下に動かせるリサイザー -->
+    <div id="resizer" class="resizer">
+        <span class="resizer-grip">≡</span>
+    </div>
+
+    <footer id="mainFooter">
         <div id="logArea">サーバーのログを待機中...</div>
         <div class="token-area">
             <label for="tokenInput" id="tokenLabel">BOT TOKEN</label>
@@ -60,8 +67,8 @@
             <button id="btnCut" class="fm-btn" onclick="cutSelectedFile()" disabled>✂ 切り取り</button>
             <button id="btnCopy" class="fm-btn" onclick="copySelectedFile()" disabled>📋 コピー</button>
             <button id="btnPaste" class="fm-btn" onclick="pasteFile()" disabled>📋 貼り付け</button>
-            <button id="btnDelete" class="fm-btn" onclick="deleteSelectedFile()" disabled style="color: #ff4d4d;">🗑
-                削除</button>
+            <button id="btnRename" class="fm-btn" onclick="renameSelectedFile()" disabled>✏ 名前変更</button>
+            <button id="btnDelete" class="fm-btn" onclick="deleteSelectedFile()" disabled style="color: #ff4d4d;">🗑 削除</button>
         </div>
         <div class="fm-content">
             <table class="fm-table">
@@ -88,6 +95,8 @@
         const imgInput = document.getElementById('imageUploadInput');
         const tabsContainer = document.getElementById('tabsContainer');
         const tokenLabel = document.getElementById('tokenLabel');
+        const resizer = document.getElementById('resizer');
+        const footer = document.getElementById('mainFooter');
 
         let logPollingInterval = null;
         let db;
@@ -114,6 +123,28 @@ if (eventType === 'MESSAGE') {
 
         let editor;
         let isEditorReady = false;
+
+        // リサイザーロジック
+        let isResizing = false;
+        resizer.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            document.body.style.cursor = 'ns-resize';
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+            const newHeight = window.innerHeight - e.clientY;
+            if (newHeight > 50 && newHeight < window.innerHeight - 150) {
+                footer.style.height = newHeight + 'px';
+                if(editor) editor.layout();
+            }
+        });
+        document.addEventListener('mouseup', () => {
+            if(isResizing) {
+                isResizing = false;
+                document.body.style.cursor = 'default';
+                if(editor) editor.layout();
+            }
+        });
 
         // Monaco Editor 設定
         require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
@@ -222,10 +253,26 @@ if (eventType === 'MESSAGE') {
                 tokenInput.value = bot.token || '';
                 tokenLabel.textContent = bot.name + " TOKEN";
             }
-            renderTabs(); updatePlayButton();
+            renderTabs(); updatePlayButton(); fetchLogsImmediately();
         }
 
         tokenInput.addEventListener('input', saveCurrentBotToDB);
+
+        // --- コード操作機能 ---
+        function clearCode() {
+            if (isEditorReady && confirm("本当にコードを全て消去しますか？\n※この操作は元に戻せません。")) {
+                editor.setValue('');
+                saveCurrentBotToDB();
+            }
+        }
+
+        function copyCode() {
+            if (isEditorReady) {
+                navigator.clipboard.writeText(editor.getValue())
+                    .then(() => alert("コードをクリップボードにコピーしました。"))
+                    .catch(err => alert("コピーに失敗しました: " + err));
+            }
+        }
 
         // --- ファイルマネージャー機能 ---
         function openFileManager() {
@@ -267,7 +314,6 @@ if (eventType === 'MESSAGE') {
                         selectedFileName = null;
                         updateToolbarButtons();
                         refreshFileList();
-                        // 【修正】入力を空にして同じファイルを連続で選べるようにする
                         event.target.value = '';
                     };
 
@@ -305,7 +351,35 @@ if (eventType === 'MESSAGE') {
             document.getElementById('btnCut').disabled = !hasSelection;
             document.getElementById('btnCopy').disabled = !hasSelection;
             document.getElementById('btnDelete').disabled = !hasSelection;
+            document.getElementById('btnRename').disabled = !hasSelection;
             document.getElementById('btnPaste').disabled = clipboardFile === null;
+        }
+
+        async function renameSelectedFile() {
+            if (!selectedFileName) return;
+            const newName = prompt("新しいファイル名を入力してください（拡張子含む）:", selectedFileName);
+            if (!newName || newName === selectedFileName) return;
+
+            const existing = await new Promise(res => {
+                const check = db.transaction(["images"], "readonly").objectStore("images").get(newName);
+                check.onsuccess = () => res(check.result);
+            });
+            if (existing) { alert("同名のファイルが既に存在します。"); return; }
+
+            const store = db.transaction(["images"], "readonly").objectStore("images");
+            const req = store.get(selectedFileName);
+            req.onsuccess = () => {
+                const data = req.result;
+                const newData = { ...data, name: newName, date: new Date().toLocaleString() };
+                const putTx = db.transaction(["images"], "readwrite");
+                putTx.objectStore("images").put(newData);
+                putTx.objectStore("images").delete(selectedFileName);
+                putTx.oncomplete = () => {
+                    selectedFileName = newName; 
+                    updateToolbarButtons(); 
+                    refreshFileList();
+                };
+            };
         }
 
         function cutSelectedFile() {
@@ -381,12 +455,10 @@ if (eventType === 'MESSAGE') {
 
         // --- 実行ロジック ---
         async function resolveImagePaths(code) {
-            // 改良版正規表現: image/ または image\\ で始まるパスを広範囲にキャッチ
-            const pattern = /image[\\\/]+[^\s"'\)\};,]+/g;
+            const pattern = /image[\\\/]+[^"'\)\};,\s]+/g;
             const matches = code.match(pattern);
             if (!matches) return code;
 
-            // IndexedDBから全画像を取得
             const images = await new Promise(res => {
                 const transaction = db.transaction(["images"], "readonly");
                 const req = transaction.objectStore("images").getAll();
@@ -395,15 +467,11 @@ if (eventType === 'MESSAGE') {
 
             let processedCode = code;
             for (const match of matches) {
-                // パスからファイル名のみを抽出 (例: "image/test.png" -> "test.png")
-                const fileName = match.replace(/^image[\\\/]+/, "").replace(/\\+$/, "");
+                const fileName = match.replace(/^image[\\\/]+/, "");
                 const entry = images.find(i => i.name === fileName);
 
                 if (entry) {
-                    // 文字列置換時に、元のソースコードにある「image/ファイル名」をBase64データURLに差し替え
                     processedCode = processedCode.split(match).join(entry.data);
-                } else {
-                    console.warn(`画像が見つかりません: ${fileName}`);
                 }
             }
             return processedCode;
@@ -415,21 +483,29 @@ if (eventType === 'MESSAGE') {
             btnOutput.className = isRunning ? 'btn-stop' : 'btn-start';
         }
 
+        async function fetchLogsImmediately() {
+            try {
+                const response = await fetch('/api/logs');
+                const data = await response.json();
+                runningStatusMap = data.runningBots; 
+                updatePlayButton();
+                logArea.innerHTML = '';
+                
+                // 現在選択中のBotIDに対応するログのみを表示
+                const currentLogs = data.logs[currentBotId] || [];
+                currentLogs.forEach(log => {
+                    const div = document.createElement('div');
+                    div.style.whiteSpace = "pre-wrap"; // エラーの改行などを維持
+                    div.textContent = log; 
+                    logArea.appendChild(div);
+                });
+                logArea.scrollTop = logArea.scrollHeight;
+            } catch (e) { }
+        }
+
         function startLogPolling() {
             if (logPollingInterval) return;
-            logPollingInterval = setInterval(async () => {
-                try {
-                    const response = await fetch('/api/logs');
-                    const data = await response.json();
-                    runningStatusMap = data.runningBots; updatePlayButton();
-                    logArea.innerHTML = '';
-                    data.logs.forEach(log => {
-                        const div = document.createElement('div');
-                        div.textContent = log; logArea.appendChild(div);
-                    });
-                    logArea.scrollTop = logArea.scrollHeight;
-                } catch (e) { }
-            }, 2000);
+            logPollingInterval = setInterval(fetchLogsImmediately, 2000);
         }
         startLogPolling();
 
